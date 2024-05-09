@@ -23,7 +23,6 @@ Dowload and install instructions can be found at: https://github.com/stevenloveg
 
 ## 2. Build and Compile
 
-		cd vilo
 		chmod +x build.sh
 		./build.sh
 
