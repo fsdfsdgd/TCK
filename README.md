@@ -1,31 +1,48 @@
-# TCK-VILO
-A Tightly-Coupled and Keyframe-Based Visual-Inertial-Lidar Odometry System for Mobile Robots With Adaptive Sensor Reliability Evaluation. And we will open the source code ASAP.
+# TCK-VILO:A Tightly-Coupled and Keyframe-Based Visual-Inertial-Lidar Odometry System for Mobile Robots With Adaptive Sensor Reliability Evaluation
 
-## 1. Experiments on Newer College Dataset
-The results are Seq. 1 and Seq. 7, respectivey.
-<div align=center>
-<img src="img/Newer College Dataset Seq1.jpg" width="400" height="300"><img src="img/Newer College Dataset Seq7.jpg" width="400" height="300"/>
-</div>
 
-## 2. Experiments on Self-collected Dataset
-### 2.1 Our mobile robot platform and hand-held device.
-<div align=center>
-<img src="img/Our mobile robot.jpg" width="330" height="375"> <img src="img/Our hand-held device.jpg"  width="330" height="375"/>
-</div>
+## 1. Required Dependencies
 
-### 2.2 Experiment results.
-<div align=center>
-<img src="img/Sequence collected by our mobile robot platform.jpg" width="499" height="272">
-</div>
+### boost
+c++ Librairies (thread and system are needed). Install with
+	
+		sudo apt-get install libboost-all-dev
 
-<p align="center">
-Sequence collected by our mobile robot.
-</p>
+### Eigen3
+Linear algebra.
 
-<div align=center>
-<img src="img/Sequence collected by our hand-henld device.jpg" width="499" height="272">
-</div>
+		sudo apt-get install libeigen3-dev
 
-<p align="center">
-Sequence collected by our hand-henld device.
-</p>
+### OpenCV3
+Dowload and install instructions can be found at: http://opencv.org.
+
+
+### Pangolin
+Used for 3D visualization & the GUI.
+Dowload and install instructions can be found at: https://github.com/stevenlovegrove/Pangolin.
+
+## 2. Build and Compile
+
+		cd vilo
+		chmod +x build.sh
+		./build.sh
+
+This will create the executable `test_vilo` in *bin* folder.
+
+## 3. Run code
+
+		cd bin
+                ./test_vilo \
+                lidars=PATH_TO_LIDAR_FOLDER \
+                images=PATH_TO_IMAGE_FOLDER \
+                imus=PATH_TO_IMU_FOLDER/imu.txt \
+                calib=PATH_TO_CALIBRATION_FILE/newer_college.yaml
+
+
+- `lidars=XXX` where XXX is the folder containing lidar data(both .txt and .bin are ok).
+- `images=XXX` where XXX is the folder containing images.
+- `imus=XXX` where XXX is the files of imu data (see the *imu.txt* file in *example* folder).
+- `calib=XXX` where XXX is a calibration file (see the *newer_college.yaml* file in *example* folder).
+
+
+		
