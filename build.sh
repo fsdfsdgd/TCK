@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
-vilo_build_jobs="${VILO_BUILD_JOBS:-2}"
+vilo_build_jobs="${VILO_BUILD_JOBS:-1}"
 echo "Configuring and building thirdparty/fast ..."
 
 cd thirdparty/fast

@@ -50,7 +50,8 @@ bash build.sh -DOpenCV_DIR=/your/opencv3/cmake-directory \
 The build respects these options. It also recognizes the original workstation's
 OpenCV location as an optional search hint. Do not add `-march=native` when
 linking the system PCL: the project and g2o preserve Eigen's 16-byte ABI.
-`VILO_BUILD_JOBS=1 bash build.sh` reduces compilation memory on smaller machines.
+The build defaults to one job to limit peak compilation memory. If enough RAM
+is available, `VILO_BUILD_JOBS=2 bash build.sh` enables two concurrent jobs.
 
 ### Launch with the official bag
 
