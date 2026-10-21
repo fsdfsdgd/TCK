@@ -96,6 +96,13 @@ git commit -m "Describe the verified change"
 git push -u origin work/memory-lifecycle
 ```
 
+Pushing requires your GitHub write authentication. If using an existing SSH
+key, configure the push URL once (HTTPS cloning remains available):
+
+```bash
+git remote set-url --push origin git@github.com:fsdfsdgd/TCK.git
+```
+
 To recover a clean baseline without overwriting later work, clone the tag into
 a new directory and rebuild. To update `main`, review/test the development
 branch first and merge normally; never move the published v1.0.0 tag.
