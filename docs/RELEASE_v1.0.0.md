@@ -23,6 +23,22 @@ machine. Other dependencies and clone/build/launch commands are in README.md.
 Install dependencies and compile after cloning; no Bag or portable binary is
 bundled. The generated environment is `build/devel/setup.bash`.
 
+## Release verification
+
+A clean source clone (without the original build caches or generated libraries)
+rebuilt FAST, Sophus, g2o, libvilo, `test_vilo`, `test_vilo_bag` and
+`lidar_memory_test` on the stated environment. The build was completed with
+one job after reducing concurrency to avoid desktop memory pressure.
+
+Official bag, offset 19 seconds and duration 8 seconds, headless ROS launch:
+238 processed images, 76 LiDAR states/trajectory poses, VIO/LIO/fused flags all
+initialized. 25,109 keyframe surface features yielded 14,627 global display-map
+points. Original left/right image data and timestamps matched the bag;
+map/path/clock/TF output and final TF keep-alive checks passed.
+Trajectory-format checks passed (76 finite monotonic poses, maximum adjacent
+displacement 0.558 m). These are startup/output checks, not geometric accuracy
+acceptance; the exact trajectory can vary with multithreaded execution.
+
 ## Known limits
 
 - Long windows can exhaust RAM. Streaming input and retained-state lifetime
