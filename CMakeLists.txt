@@ -55,8 +55,10 @@ ENDIF()
 SET(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 
 # Add plain cmake packages 
-set( OpenCV_DIR "/usr/local/opencv3/usr/local/share/OpenCV" )
-FIND_PACKAGE(OpenCV 3 REQUIRED)
+# Respect -DOpenCV_DIR and normal CMake discovery. The hint preserves the
+# original workstation installation without forcing that path on new clones.
+FIND_PACKAGE(OpenCV 3 REQUIRED CONFIG
+  HINTS "/usr/local/opencv3/usr/local/share/OpenCV")
 FIND_PACKAGE(PCL REQUIRED)
 FIND_PACKAGE(Eigen REQUIRED)
 FIND_PACKAGE(Boost REQUIRED COMPONENTS thread system)

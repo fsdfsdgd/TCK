@@ -1,0 +1,24 @@
+# Local datasets and runtime results are not release source.
+/bag/
+*.bag
+*.bag.active
+/run/
+/lidarPose.txt
+*.tum
+*.log
+
+# Rebuild these after cloning; never reuse another machine's CMake cache.
+build/
+/devel/
+/install/
+/log/
+/bin/
+/lib/
+/thirdparty/g2o/lib/
+
+# Local editor/recovery files remain on disk, outside the published version.
+*.bak
+*.save
+*.before_index_fix
+__pycache__/
+*.py[cod]
