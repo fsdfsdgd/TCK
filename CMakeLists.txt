@@ -13,7 +13,9 @@ SET(PROJECT_NAME vilo)
 PROJECT(${PROJECT_NAME})
 CMAKE_MINIMUM_REQUIRED (VERSION 2.8.3)
 
-SET(CMAKE_BUILD_TYPE Release) 
+IF(NOT CMAKE_BUILD_TYPE)
+  SET(CMAKE_BUILD_TYPE RelWithDebInfo)
+ENDIF()
 
 SET(CMAKE_VERBOSE_MAKEFILE OFF)
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/bin)
@@ -36,18 +38,21 @@ ENDIF()
 
 # Set build flags, set ARM_ARCHITECTURE environment variable on Odroid
 # Set build flags. Set IS_ARM on odroid board as environment variable
-SET(CMAKE_CXX_FLAGS "-Wall -D_LINUX -D_REENTRANT -march=native -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unknown-pragmas")
+SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -D_LINUX -D_REENTRANT -Wno-unused-variable -Wno-unused-but-set-variable -Wno-unknown-pragmas")
+# Ubuntu's prebuilt PCL uses the 16-byte SSE Eigen ABI. AVX/-march=native
+# changes aligned_allocator's malloc/free convention across the library boundary.
+ADD_DEFINITIONS(-DEIGEN_MAX_ALIGN_BYTES=16 -DEIGEN_MAX_STATIC_ALIGN_BYTES=16)
 IF(DEFINED ENV{ARM_ARCHITECTURE})
   SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mfpu=neon -march=armv7-a")
 ELSE()
   SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mmmx -msse -msse -msse2 -msse3 -mssse3")
 ENDIF()
 IF(CMAKE_COMPILER_IS_GNUCC)
-  SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++0x")
+  SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17")
 ELSE()
   SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
 ENDIF()
-SET(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS} -O3 -fsee -fomit-frame-pointer -fno-signed-zeros -fno-math-errno -funroll-loops")
+SET(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")
 
 # Add plain cmake packages 
 set( OpenCV_DIR "/usr/local/opencv3/usr/local/share/OpenCV" )
@@ -133,3 +138,45 @@ ${SOPHUS_LIBS}
 # TESTS
 ADD_EXECUTABLE(test_vilo example/test_vilo.cpp)
 TARGET_LINK_LIBRARIES(test_vilo vilo)
+
+find_package(catkin REQUIRED COMPONENTS
+    roscpp
+    rosbag
+    sensor_msgs
+    geometry_msgs
+    nav_msgs
+    rosgraph_msgs
+    tf2_ros
+    tf2_msgs
+)
+
+include_directories(${catkin_INCLUDE_DIRS})
+catkin_package(CATKIN_DEPENDS roscpp rosbag sensor_msgs geometry_msgs nav_msgs rosgraph_msgs tf2_ros tf2_msgs)
+
+add_executable(
+    test_vilo_bag
+    example/test_vilo_bag.cpp
+)
+
+target_link_libraries(
+    test_vilo_bag
+    vilo
+    ${catkin_LIBRARIES}
+)
+
+enable_testing()
+add_executable(lidar_memory_test tests/lidar_memory_test.cpp)
+target_link_libraries(lidar_memory_test vilo ${catkin_LIBRARIES})
+# Keep the original standalone bin/ commands and catkin's lib/vilo commands in
+# sync, so rosrun cannot accidentally select an older pre-ROS bag executable.
+foreach(entry test_vilo_bag lidar_memory_test)
+  add_custom_command(TARGET ${entry} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      $<TARGET_FILE:${entry}> ${PROJECT_SOURCE_DIR}/bin/${entry})
+endforeach()
+
+install(TARGETS vilo test_vilo test_vilo_bag
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION})
+install(DIRECTORY launch rviz example DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+  FILES_MATCHING PATTERN "*.launch" PATTERN "*.rviz" PATTERN "*.yaml")

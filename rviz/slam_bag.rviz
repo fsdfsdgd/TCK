@@ -1,0 +1,76 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+  - Class: rviz/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz/Image
+      Name: Left infrared image (SLAM input)
+      Enabled: true
+      Image Topic: /camera/infra1/image_rect_raw
+      Transport Hint: raw
+      Queue Size: 1
+      Normalize Range: true
+    - Class: rviz/Image
+      Name: Right infrared image (display only)
+      Enabled: true
+      Image Topic: /camera/infra2/image_rect_raw
+      Transport Hint: raw
+      Queue Size: 1
+      Normalize Range: true
+    - Class: rviz/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 1
+      Plane Cell Count: 50
+    - Class: rviz/PointCloud2
+      Name: SLAM voxel-fused keyframe surface map
+      Enabled: true
+      Topic: /vilo/map_cloud
+      Queue Size: 1
+      Style: Points
+      Size (Pixels): 2
+      Color Transformer: AxisColor
+      Axis: Z
+      Decay Time: 0
+    - Class: rviz/Path
+      Name: SLAM trajectory
+      Enabled: true
+      Topic: /vilo/path
+      Color: 255; 100; 0
+      Line Style: Lines
+      Line Width: 0.03
+      Buffer Length: 1
+    - Class: rviz/Pose
+      Name: Current IMU body pose
+      Enabled: true
+      Topic: /vilo/pose
+      Shape: Axes
+      Axes Length: 0.5
+      Axes Radius: 0.03
+    - Class: rviz/TF
+      Name: Sensor frames
+      Enabled: true
+      Show Axes: true
+      Show Arrows: true
+      Show Names: true
+  Enabled: true
+  Global Options:
+    Background Color: 35; 35; 35
+    Fixed Frame: vilo_world
+    Frame Rate: 20
+  Tools:
+    - Class: rviz/Interact
+    - Class: rviz/MoveCamera
+  Views:
+    Current:
+      Class: rviz/Orbit
+      Distance: 20
+      Focal Point: {X: 0, Y: 0, Z: 0}
+      Pitch: 0.6
+      Yaw: 0.8
+Window Geometry:
+  Width: 1200
+  Height: 850

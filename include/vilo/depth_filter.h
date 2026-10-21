@@ -131,6 +131,9 @@ public:
   virtual ~DepthFilter();
   void startThread();
   void stopThread();
+  // Offline playback must drain mapping before reading optimized states or
+  // advancing the next input; otherwise its unpaced input drops queued work.
+  void waitUntilIdle();
   void addFrame(FramePtr frame);
   void addKeyframe(FramePtr frame, double depth_mean, double depth_min, float converge_thresh=200.0);
   void removeKeyframe(FramePtr frame);
@@ -216,6 +219,8 @@ protected:
   std::queue<FramePtr> frame_queue_;
   boost::mutex frame_queue_mut_;
   boost::condition_variable frame_queue_cond_;
+  boost::condition_variable idle_cond_;
+  bool processing_frame_ = false;
 
   FramePtr new_keyframe_;             
   boost::mutex new_keyframe_mut_;

@@ -1,3 +1,4 @@
+#include <cmath>
 /**
 * This file is part of dvo.
 *
@@ -65,7 +66,7 @@ const float MADScaleEstimator::NORMALIZER = 1.4826f; // 1 / 0.6745
 float MADScaleEstimator::compute(std::vector<float>& errors) const
 {
     // error must be in absolute values!
-    std::vector<float>::iterator it = errors.begin()+floor(errors.size()/2);
+    std::vector<float>::iterator it = errors.begin()+errors.size()/2;
     nth_element(errors.begin(), it, errors.end());
 
     return NORMALIZER * (*it);

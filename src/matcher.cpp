@@ -1050,7 +1050,9 @@ bool Matcher::findEpipolarMatchPrevious(
         }
     }
 
-    if(abs(bestCounter - secondCounter) > 1.0f && MIN_DISTANCE_ERROR_STEREO * zmncc_second > zmncc_best)
+    if((bestCounter > secondCounter
+         ? bestCounter - secondCounter
+         : secondCounter - bestCounter) > 1 && MIN_DISTANCE_ERROR_STEREO * zmncc_second > zmncc_best)
         return false;
 
     if(zmncc_best > 0.8)

@@ -48,12 +48,21 @@
 #include <stdlib.h>
 #include <time.h>
 #include <random>
+#include <stdexcept>
 
 
 #define SCHUR_TRICK 1
 
 namespace vilo {
 namespace ba {
+
+// Graph insertion is required work, not an assertion-only side effect.
+// In Release, assert(optimizer.addVertex(...)) never evaluates addVertex.
+static void requireGraphInsertion(bool success)
+{
+    if (!success)
+        throw std::runtime_error("g2o rejected an optimization graph vertex/edge");
+}
 
 static Eigen::MatrixXd marginalize(const Eigen::MatrixXd &H, const int &start, const int &end);
 
@@ -649,7 +658,7 @@ void visualImuLocalBundleAdjustment(Frame* center_kf,
         
         double idist = (*it_pt)->getPointIdist();
         vPoint->setEstimate(idist);
-        assert(optimizer.addVertex(vPoint));
+        requireGraphInsertion(optimizer.addVertex(vPoint));
         (*it_pt)->lba_id_ = center_kf->id_;
 
         if((*it_pt)->hostFeature_->frame->lba_id_ != center_kf->id_)
@@ -658,7 +667,7 @@ void visualImuLocalBundleAdjustment(Frame* center_kf,
             VertexPose* vHost = new VertexPose((*it_pt)->hostFeature_->frame);
             vHost->setId((*it_pt)->hostFeature_->frame->id_);
             vHost->setFixed(true);
-            assert(optimizer.addVertex(vHost));
+            requireGraphInsertion(optimizer.addVertex(vHost));
 
             fix_kf_set.insert((*it_pt)->hostFeature_->frame);
         }
@@ -679,7 +688,7 @@ void visualImuLocalBundleAdjustment(Frame* center_kf,
                 VertexPose* vTarget = new VertexPose((*it_obs)->frame);
                 vTarget->setId((*it_obs)->frame->id_);
                 vTarget->setFixed(true);
-                assert(optimizer.addVertex(vTarget));
+                requireGraphInsertion(optimizer.addVertex(vTarget));
                 fix_kf_set.insert((*it_obs)->frame);
             }
 
@@ -716,7 +725,7 @@ void visualImuLocalBundleAdjustment(Frame* center_kf,
                 edge->setParameterId(0, 0);
 
                 edges.push_back(EdgeFrameFeature(edge, (*it_obs)->frame, *it_obs));
-                assert(optimizer.addEdge(edge));
+                requireGraphInsertion(optimizer.addEdge(edge));
 
                 edge->computeError();
                 visual_error += edge->chi2();
@@ -754,7 +763,7 @@ void visualImuLocalBundleAdjustment(Frame* center_kf,
                 edgeLet->setParameterId(0, 0);
 
                 edgeLets.push_back(EdgeLetFrameFeature(edgeLet, (*it_obs)->frame, *it_obs));
-                assert(optimizer.addEdge(edgeLet));
+                requireGraphInsertion(optimizer.addEdge(edgeLet));
 
                 edgeLet->computeError();
                 visual_error += edgeLet->chi2();
@@ -1030,7 +1039,7 @@ void visualLocalBundleAdjustment(Frame* center_kf,
         double idist = (*it_pt)->getPointIdist();
         vPoint->setEstimate(idist);
         vPoint->setMarginalized(true);
-        assert(optimizer.addVertex(vPoint));
+        requireGraphInsertion(optimizer.addVertex(vPoint));
         (*it_pt)->lba_id_ = center_kf->id_;
 
         // Add Host Frame
@@ -1040,7 +1049,7 @@ void visualLocalBundleAdjustment(Frame* center_kf,
             VertexPose* vHost = new VertexPose((*it_pt)->hostFeature_->frame);
             vHost->setId((*it_pt)->hostFeature_->frame->id_);
             vHost->setFixed(true);
-            assert(optimizer.addVertex(vHost));
+            requireGraphInsertion(optimizer.addVertex(vHost));
 
             kf_set.insert( (*it_pt)->hostFeature_->frame);
         }
@@ -1062,7 +1071,7 @@ void visualLocalBundleAdjustment(Frame* center_kf,
                 VertexPose* vTarget = new VertexPose((*it_obs)->frame);
                 vTarget->setId((*it_obs)->frame->id_);
                 vTarget->setFixed(true);
-                assert(optimizer.addVertex(vTarget));
+                requireGraphInsertion(optimizer.addVertex(vTarget));
 
                 kf_set.insert((*it_obs)->frame);
             }
@@ -1101,7 +1110,7 @@ void visualLocalBundleAdjustment(Frame* center_kf,
                 edge->setParameterId(0, 0);
 
                 edges.push_back(new EdgeFrameFeature(edge, (*it_obs)->frame, *it_obs));
-                assert(optimizer.addEdge(edge));
+                requireGraphInsertion(optimizer.addEdge(edge));
 
                 edge->computeError();
                 error += edge->chi2();
@@ -1141,7 +1150,7 @@ void visualLocalBundleAdjustment(Frame* center_kf,
                 edgeLet->setParameterId(0, 0);
 
                 edgeLets.push_back(new EdgeLetFrameFeature(edgeLet, (*it_obs)->frame, *it_obs));
-                assert(optimizer.addEdge(edgeLet));
+                requireGraphInsertion(optimizer.addEdge(edgeLet));
             }
 
             ++n_edges;
@@ -1317,7 +1326,7 @@ void visualMapOptimization(Map* map,
         vPoint->setFixed(false);
         double idist = (*it_pt)->getPointIdist();
         vPoint->setEstimate(idist);
-        assert(optimizer.addVertex(vPoint));
+        requireGraphInsertion(optimizer.addVertex(vPoint));
 
         list<Feature*> obs = (*it_pt)->getObs();
         list<Feature*>::iterator it_obs = obs.begin();
@@ -1362,7 +1371,7 @@ void visualMapOptimization(Map* map,
                 edge->setParameterId(0, 0);
 
                 edges.push_back(new EdgeFrameFeature(edge, (*it_obs)->frame, *it_obs));
-                assert(optimizer.addEdge(edge));
+                requireGraphInsertion(optimizer.addEdge(edge));
 
                 edge->computeError();
                 error += edge->chi2();
@@ -1400,7 +1409,7 @@ void visualMapOptimization(Map* map,
                 edgeLet->setRobustKernel(rk);
                 edgeLet->setParameterId(0, 0);
                 edgeLets.push_back(new EdgeLetFrameFeature(edgeLet, (*it_obs)->frame, *it_obs));
-                assert(optimizer.addEdge(edgeLet));
+                requireGraphInsertion(optimizer.addEdge(edgeLet));
             }
 
             ++n_edges;
@@ -1717,7 +1726,7 @@ void visualImuFullBundleAdjustment(Map* map, bool is_opt_each_bias, double prior
         double idist = (*it_pt)->getPointIdist();
         VPoint->setEstimate(idist);
         VPoint->setMarginalized(true);
-        assert(optimizer.addVertex(VPoint));
+        requireGraphInsertion(optimizer.addVertex(VPoint));
 
         // Add Host Frame
         g2o::HyperGraph::Vertex* VPH = optimizer.vertex((*it_pt)->hostFeature_->frame->id_);
@@ -1761,7 +1770,7 @@ void visualImuFullBundleAdjustment(Map* map, bool is_opt_each_bias, double prior
                 edge->setRobustKernel(rk);
                 edge->setParameterId(0, 0);
                 edges.push_back(new EdgeFrameFeature(edge, (*it_obs)->frame, *it_obs));
-                assert(optimizer.addEdge(edge));
+                requireGraphInsertion(optimizer.addEdge(edge));
 
                 edge->computeError();
                 error_v += edge->chi2();
@@ -1786,7 +1795,7 @@ void visualImuFullBundleAdjustment(Map* map, bool is_opt_each_bias, double prior
                 edgeLet->setRobustKernel(rk);
                 edgeLet->setParameterId(0, 0);
                 edgeLets.push_back(new EdgeLetFrameFeature(edgeLet, (*it_obs)->frame, *it_obs));
-                assert(optimizer.addEdge(edgeLet));
+                requireGraphInsertion(optimizer.addEdge(edgeLet));
             }
 
             ++n_v_edges;
@@ -4018,7 +4027,7 @@ void lidarVisualImuLocalBundleAdjustment(
         vPoint->setFixed(false);
         double idist = (*it_pt)->getPointIdist();
         vPoint->setEstimate(idist);
-        assert(optimizer.addVertex(vPoint));
+        requireGraphInsertion(optimizer.addVertex(vPoint));
         (*it_pt)->lba_id_ = center_kf->id_;
 
         if((*it_pt)->hostFeature_->frame->lba_id_ != center_kf->id_)
@@ -4027,7 +4036,7 @@ void lidarVisualImuLocalBundleAdjustment(
             VertexPose* vHost = new VertexPose((*it_pt)->hostFeature_->frame);
             vHost->setId((*it_pt)->hostFeature_->frame->id_);
             vHost->setFixed(true);
-            assert(optimizer.addVertex(vHost));
+            requireGraphInsertion(optimizer.addVertex(vHost));
             double ts = (*it_pt)->hostFeature_->frame->getTimeStamp();
             visual_ts_id_map.insert(make_pair(ts, (*it_pt)->hostFeature_->frame->id_));
         }
@@ -4048,7 +4057,7 @@ void lidarVisualImuLocalBundleAdjustment(
                 VertexPose* vTarget = new VertexPose((*it_obs)->frame);
                 vTarget->setId((*it_obs)->frame->id_);
                 vTarget->setFixed(true);
-                assert(optimizer.addVertex(vTarget));
+                requireGraphInsertion(optimizer.addVertex(vTarget));
 
                 double ts = (*it_obs)->frame->getTimeStamp();
                 visual_ts_id_map.insert(make_pair(ts, (*it_obs)->frame->id_));
@@ -4086,7 +4095,7 @@ void lidarVisualImuLocalBundleAdjustment(
                 edge->setParameterId(0, 0);
 
                 edges.push_back(EdgeFrameFeature(edge, (*it_obs)->frame, *it_obs));
-                assert(optimizer.addEdge(edge));
+                requireGraphInsertion(optimizer.addEdge(edge));
             }
             else
             {
@@ -4121,7 +4130,7 @@ void lidarVisualImuLocalBundleAdjustment(
                 edgeLet->setParameterId(0, 0);
 
                 edgeLets.push_back(EdgeLetFrameFeature(edgeLet, (*it_obs)->frame, *it_obs));
-                assert(optimizer.addEdge(edgeLet));
+                requireGraphInsertion(optimizer.addEdge(edgeLet));
             }
 
             ++n_edges;
@@ -4994,7 +5003,7 @@ void lidarVisualImuLocalBundleAdjustment(
         vPoint->setMarginalized(true);
         double idist = (*it_pt)->getPointIdist();
         vPoint->setEstimate(idist);
-        assert(optimizer.addVertex(vPoint));
+        requireGraphInsertion(optimizer.addVertex(vPoint));
         (*it_pt)->lba_id_ = center_kf->id_;
 
         if((*it_pt)->hostFeature_->frame->lba_id_ != center_kf->id_)
@@ -5004,7 +5013,7 @@ void lidarVisualImuLocalBundleAdjustment(
             long host_id = 4 * (max_lid+1) + (*it_pt)->hostFeature_->frame->id_;
             vHost->setId(host_id);
             vHost->setFixed(true);
-            assert(optimizer.addVertex(vHost));
+            requireGraphInsertion(optimizer.addVertex(vHost));
         }
 
         long h_vid=0;
@@ -5052,7 +5061,7 @@ void lidarVisualImuLocalBundleAdjustment(
                 long target_id = 4 * (max_lid+1) + (*it_obs)->frame->id_;
                 vTarget->setId(target_id);
                 vTarget->setFixed(true);
-                assert(optimizer.addVertex(vTarget));
+                requireGraphInsertion(optimizer.addVertex(vTarget));
 
             }
 
@@ -5124,7 +5133,7 @@ void lidarVisualImuLocalBundleAdjustment(
                 edge->setParameterId(0, 0);
 
                 edges.push_back(EdgeFrameFeature(edge, (*it_obs)->frame, *it_obs));
-                assert(optimizer.addEdge(edge));
+                requireGraphInsertion(optimizer.addEdge(edge));
 
                 edge->computeError();                
                 if(edge->chi2() >= 20)
@@ -5166,7 +5175,7 @@ void lidarVisualImuLocalBundleAdjustment(
                 edgeLet->setParameterId(0, 0);
 
                 edgeLets.push_back(EdgeLetFrameFeature(edgeLet, (*it_obs)->frame, *it_obs));
-                assert(optimizer.addEdge(edgeLet));
+                requireGraphInsertion(optimizer.addEdge(edgeLet));
 
                 edgeLet->computeError();
                 visual_error += edgeLet->chi2();

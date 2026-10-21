@@ -24,7 +24,7 @@
 
 #include <boost/timer.hpp>
 #include <boost/thread.hpp>
-
+#include <iostream>
 #include "vilo/frame_handler_mono.h"
 #include "vilo/bundle_adjustment.h"
 
@@ -178,6 +178,19 @@ void FrameHandlerMono::addLidarImageImu(pcl::PointCloud<pcl::PointXYZI>::Ptr lid
             new_lidar_->align_vid_ = new_frame_->id_;
         }
 
+        // Queue the scan before waking the mapper with its paired image. If the
+        // image is queued first, the worker can miss this scan until the next
+        // image (or leave the final scan unprocessed at end-of-bag).
+        if (1 == type)
+        {
+            is_first_lidar_ = false;
+            ++n_lidar_;
+            last_lidar_ = new_lidar_;
+            if (new_lidar_->is_keylidar_)
+                last_key_lidar_ = new_lidar_.get();
+            depth_filter_->addLidar(new_lidar_);
+        }
+
         if(STAGE_DEFAULT_FRAME == stage_)
         {
             if(RESULT_IS_KEYFRAME == res)
@@ -228,22 +241,6 @@ void FrameHandlerMono::addLidarImageImu(pcl::PointCloud<pcl::PointXYZI>::Ptr lid
         last_frame_ = new_frame_;
         new_frame_.reset();
         finishFrameProcessingCommon(last_frame_->id_, res, last_frame_->m_n_inliers);
-
-        if(1 == type)
-        {
-            if(is_first_lidar_)
-            {
-                is_first_lidar_ = false;
-            }
-
-            n_lidar_++;
-            last_lidar_ = new_lidar_;
-
-            if(new_lidar_->is_keylidar_)
-                last_key_lidar_ = new_lidar_.get();
-            
-            depth_filter_->addLidar(new_lidar_);
-        }
 
     }
     
@@ -310,6 +307,11 @@ void FrameHandlerMono::addLidarImu(pcl::PointCloud<pcl::PointXYZI>::Ptr p_cloud,
 {
     struct timeval st,et;
     gettimeofday(&st,NULL);
+    std::cerr << "[DBG] addLidarImu: input cloud="
+          << p_cloud.get()
+          << ", use_count=" << p_cloud.use_count()
+          << ", points=" << p_cloud->points.size()
+          << std::endl;
     new_lidar_.reset(new Lidar(p_cloud));
     new_lidar_->setTbl(T_b_l_);
     new_lidar_->setTimeStamp(timestamp);
@@ -1505,7 +1507,8 @@ void FrameHandlerMono::trackNewLidarFrame(LidarPtr& new_lidar_, LidarPtr& last_l
         {
             pcl::PointXYZI line_ftr = new_lidar_->ptr_corners_->points[i];
             new_lidar_->transformToStart(line_ftr, p_w , SCAN_PERIOD, q_last_cur, t_last_cur);
-            last_lidar_->kdtree_corner_->nearestKSearch(p_w, 1, nbr_id_vec, nbr_dist_vec);
+            if (last_lidar_->kdtree_corner_->nearestKSearch(p_w, 1, nbr_id_vec, nbr_dist_vec) != 1)
+                continue;
 
             int closestPointInd = -1, minPointInd2 = -1;
             if (nbr_dist_vec[0] < DISTANCE_SQ_THRESHOLD)

@@ -154,6 +154,14 @@ void DepthFilter::addFrame(FramePtr frame)
         updateSeeds(frame);
 }
 
+void DepthFilter::waitUntilIdle()
+{
+    if (!thread_) return;
+    lock_t lock(frame_queue_mut_);
+    while (processing_frame_ || !frame_queue_.empty() || getNewKeyframeFlag())
+        idle_cond_.wait(lock);
+}
+
 void DepthFilter::addKeyframe(FramePtr frame, double depth_mean, double depth_min, float converge_thresh)
 {
     new_keyframe_min_depth_ = depth_min;
@@ -312,6 +320,7 @@ void DepthFilter::run()
                 }
             }
 
+            processing_frame_ = true;
             n_pre_update_ = 0;
             n_pre_try_ = 0;
 
@@ -369,6 +378,11 @@ void DepthFilter::run()
         }
 
         localMapping(is_track_good_);
+        {
+            lock_t lock(frame_queue_mut_);
+            processing_frame_ = false;
+            idle_cond_.notify_all();
+        }
     }
 }
 
@@ -381,18 +395,9 @@ void DepthFilter::updateSeeds(FramePtr frame)
      
     if(Seed::batch_counter > 30 && frame->isKeyframe() && frame->m_pc == NULL)
     {
-        list<FramePtr>::iterator it = frame_prior_[Seed::batch_counter-30].begin();
-        while(it != frame_prior_[Seed::batch_counter-30].end())
-        {
-            Frame* dframe = (*it).get();
-
-            if(!dframe->isKeyframe())
-            {
-                delete dframe;
-                dframe = NULL;
-            }
-            ++it;
-        }
+        // These frames are owned by shared_ptr. Deleting get() leaves dangling
+        // owners and causes a later double free. Release this history's owners.
+        frame_prior_[Seed::batch_counter-30].clear();
     }
     
     lock_t lock(seeds_mut_);

@@ -30,7 +30,7 @@
 #include <fstream>
 #include <string>
 #include <sstream>
-
+#include <iostream>
 #include "vilo/lidar.h"
 #include "vilo/vikit/so3_functions.h"
 
@@ -74,6 +74,7 @@ Lidar::Lidar(pcl::PointCloud<pcl::PointXYZI>::Ptr p_cloud ):
     align_vid_ = -1;
     ba_ = Eigen::Vector3d(0,0,0);
     bg_ = Eigen::Vector3d(0,0,0);
+    velocity_.setZero();
 
     is_undist_pts_ = true;
     T_f_w_ = Sophus::SE3(Eigen::Matrix3d::Identity(),Eigen::Vector3d(0,0,0));
@@ -84,9 +85,8 @@ Lidar::Lidar(pcl::PointCloud<pcl::PointXYZI>::Ptr p_cloud ):
     ptr_less_corners_ = ptmp;
     ptr_less_surfs_ = ptmp;
 
-    pcl::KdTreeFLANN<pcl::PointXYZI>::Ptr treetmp(new pcl::KdTreeFLANN<pcl::PointXYZI>);
-    kdtree_corner_ = treetmp;
-    kdtree_surf_ = treetmp;
+    kdtree_corner_.reset(new pcl::KdTreeFLANN<pcl::PointXYZI>);
+    kdtree_surf_.reset(new pcl::KdTreeFLANN<pcl::PointXYZI>);
 
     lidar_type_ = 0;
     if(0 == lidar_type_)
@@ -134,6 +134,8 @@ void Lidar::setLidarParams()
 
 void Lidar::registerPoints()
 {
+    if (!pcloud_ || pcloud_->empty())
+        throw std::runtime_error("Cannot register an empty LiDAR scan");
     std::vector<int> scan_sid_vec, scan_eid_vec;
     scan_sid_vec.resize(N_SCAN_);
     scan_eid_vec.resize(N_SCAN_);
@@ -240,7 +242,8 @@ void Lidar::registerPoints()
     scan_eid_vec_ = scan_eid_vec;
     scan_sid_vec_ = scan_sid_vec;
 
-    assert(pcloud_->points.size() >= 10);
+    if (pcloud_->points.size() < 11)
+        throw std::runtime_error("Too few valid LiDAR points for feature extraction");
 }
 
 void Lidar::undistPoints(Sophus::SE3& dT, std::vector<double>& pts_ts_vec)
@@ -341,11 +344,19 @@ void Lidar::undistPoints(Sophus::SE3& dT, std::vector<double>& pts_ts_vec)
 
 size_t Lidar::extractFeatures()
 {
+#ifdef VILO_DEBUG_OUTPUT
+    std::cerr << "[DBG] extractFeatures begin: this="
+          << this
+          << ", cloud=" << pcloud_.get()
+          << ", points=" << pcloud_->points.size()
+          << std::endl;
+#endif
     struct timeval st,et;
     gettimeofday(&st,NULL);
     
     const int N = pcloud_->points.size();
-    assert(N>5);
+    if (N < 11)
+        throw std::runtime_error("LiDAR curvature requires an 11-point neighbourhood");
 
     std::vector<float> diff_vec; diff_vec.resize(N);
     std::vector<int> id_vec; id_vec.resize(N);
@@ -489,9 +500,10 @@ size_t Lidar::extractFeatures()
 
             for (int k = sp; k <= ep; k++)
             {
-                if (label_vec[k] <= 0)
+                int ind = id_vec[k];
+                if (label_vec[ind] <= 0)
                 {
-                    surfPointsLessFlatScan->push_back(pcloud_->points[k]);
+                    surfPointsLessFlatScan->push_back(pcloud_->points[ind]);
                 }
             }
         }
@@ -503,6 +515,15 @@ size_t Lidar::extractFeatures()
         downSizeFilter.filter(*surfPointsLessFlatScanDS);
 
         *surfPointsLessFlat += *surfPointsLessFlatScanDS;
+#ifdef VILO_DEBUG_OUTPUT
+        std::cerr << "[DBG] voxel filter done: scan="
+          << i
+          << ", input="
+          << surfPointsLessFlatScan->points.size()
+          << ", output="
+          << surfPointsLessFlatScanDS->points.size()
+          << std::endl;
+#endif
     }
 
     pcl::KdTreeFLANN<pcl::PointXYZI>::Ptr kdtreeCorner(new pcl::KdTreeFLANN<pcl::PointXYZI>());

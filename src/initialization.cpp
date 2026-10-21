@@ -30,6 +30,7 @@
 
 #include "vilo/vikit/homography.h"
 #include "vilo/vikit/math_utils.h"
+#include <opencv2/video/tracking.hpp>
 
 namespace vilo {
 namespace initialization {

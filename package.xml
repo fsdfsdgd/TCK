@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>vilo</name>
+  <version>0.1.0</version>
+  <description>TCK-VILO with synchronized offline ROS bag input and SLAM output.</description>
+  <maintainer email="bob@localhost.localdomain">Bob</maintainer>
+  <license>GPL-3.0</license>
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>roscpp</depend>
+  <depend>rosbag</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>rosgraph_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_msgs</depend>
+  <depend>eigen</depend>
+  <depend>libpcl-all-dev</depend>
+  <depend>libopencv-dev</depend>
+  <exec_depend>rviz</exec_depend>
+  <export/>
+</package>

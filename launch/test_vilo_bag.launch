@@ -1,0 +1,28 @@
+<launch>
+  <arg name="bag" default="$(find vilo)/bag/rooster_2020-03-10-10-36-30_0.bag"/>
+  <arg name="calib" default="$(find vilo)/example/newer_college.yaml"/>
+  <arg name="offset" default="0"/>
+  <!-- The official bag starts stationary. Allow motion/initialization to occur. -->
+  <arg name="duration" default="30"/>
+  <arg name="output" default="$(env HOME)/.ros/tck_vilo_trajectory.tum"/>
+  <arg name="image_topic" default="/camera/infra1/image_rect_raw"/>
+  <arg name="right_image_topic" default="/camera/infra2/image_rect_raw"/>
+  <arg name="lidar_topic" default="/os1_cloud_node/points"/>
+  <arg name="imu_topic" default="/os1_cloud_node/imu"/>
+  <arg name="world_frame" default="vilo_world"/>
+  <arg name="body_frame" default="vilo_body"/>
+  <arg name="keep_alive" default="true"/>
+  <!-- Display-only fusion; does not change the SLAM registration resolution. -->
+  <arg name="map_voxel_size" default="0.2"/>
+  <arg name="map_publish_period" default="1.0"/>
+  <arg name="rviz" default="true"/>
+  <param name="use_sim_time" value="true"/>
+  <!-- This node reads the bag directly and publishes /clock: do not also rosbag play. -->
+  <node pkg="vilo" type="test_vilo_bag" name="test_vilo_bag" output="screen"
+        args="bag=$(arg bag) calib=$(arg calib) offset=$(arg offset) duration=$(arg duration) output=$(arg output) image_topic=$(arg image_topic) right_image_topic=$(arg right_image_topic) lidar_topic=$(arg lidar_topic) imu_topic=$(arg imu_topic) publish=true keep_alive=$(arg keep_alive) world_frame=$(arg world_frame) body_frame=$(arg body_frame) map_voxel_size=$(arg map_voxel_size) map_publish_period=$(arg map_publish_period)"/>
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="vilo_rviz"
+        args="-d $(find vilo)/rviz/slam_bag.rviz -f $(arg world_frame)" output="screen">
+    <remap from="/camera/infra1/image_rect_raw" to="$(arg image_topic)"/>
+    <remap from="/camera/infra2/image_rect_raw" to="$(arg right_image_topic)"/>
+  </node>
+</launch>
