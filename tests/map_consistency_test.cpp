@@ -3,6 +3,9 @@
 #include "vilo/imu_timeline.h"
 #include "vilo/depth_filter.h"
 #include "vilo/sensor_reliability.h"
+#include "vilo/initialization_alignment.h"
+#include "vilo/camera.h"
+#include "vilo/frame.h"
 #include "../example/incremental_voxel_map.h"
 #include "../example/slam_archive.h"
 
@@ -12,6 +15,44 @@ static void require(bool ok,const char* message) {
 
 int main() {
     try {
+        std::vector<Sophus::SE3> visual_poses, lidar_poses;
+        const Eigen::Matrix3d world_rotation = Sophus::SO3::exp(Eigen::Vector3d(0,0,2.8)).matrix();
+        const Eigen::Vector3d translation(2,-3,1);
+        for (int i=0;i<19;++i) {
+            const Eigen::Vector3d p(0.01*i,0.04*i,0.001*std::sin(i));
+            const Eigen::Matrix3d r = Sophus::SO3::exp(Eigen::Vector3d(.01*i,.005*i,.02*i)).matrix();
+            visual_poses.emplace_back(r,p);
+            lidar_poses.emplace_back(world_rotation*r,7.4*world_rotation*p+translation);
+        }
+        const auto alignment = vilo::alignInitializationPoses(visual_poses,lidar_poses);
+        require(alignment.accepted && std::abs(alignment.scale-7.4)<1e-10 &&
+                (alignment.rotation-world_rotation).norm()<1e-10 && alignment.position_rmse<1e-10,
+                "Moving, nearly straight initialization collapsed or changed body axes");
+        std::vector<Sophus::SE3> stationary(19,Sophus::SE3());
+        require(!vilo::alignInitializationPoses(stationary,stationary).accepted,
+                "Unobservable stationary scale accepted");
+        auto inconsistent=lidar_poses;
+        inconsistent.back()=Sophus::SE3(Eigen::Matrix3d::Identity(),Eigen::Vector3d(50,20,10));
+        require(!vilo::alignInitializationPoses(visual_poses,inconsistent).accepted,
+                "Inconsistent initialization accepted");
+        {
+            vilo::PinholeCamera camera(640,480,400,400,320,240);
+            cv::Mat image(480,640,CV_8UC1); cv::randu(image,0,255);
+            Sophus::SE3 Tbc;
+            vilo::FramePtr frame(new vilo::Frame(&camera,image,1,Tbc));
+            const Sophus::SE3 original = visual_poses.back();
+            auto camera_pose=original.inverse(); frame->setFramePose(camera_pose);
+            frame->setVelocity(Eigen::Vector3d(1,2,3));
+            vilo::Map visual_map; visual_map.addKeyframe(frame);
+            Eigen::Matrix3d r=alignment.rotation;
+            Eigen::Vector3d t=alignment.translation;
+            double s=alignment.scale;
+            visual_map.scaleRotate(Tbc,r,r,t,s);
+            require((frame->getImuRotation()-r*original.rotation_matrix()).norm()<1e-10 &&
+                    (frame->getImuPosition()-s*r*original.translation()-t).norm()<1e-10 &&
+                    (frame->getVelocity()-s*r*Eigen::Vector3d(1,2,3)).norm()<1e-10,
+                    "World alignment was applied on the wrong side or velocity was not transformed");
+        }
         const auto weights=vilo::fusedSensorWeights(1000,4000,1,1,false);
         require(std::abs(weights.first-0.25*std::atan(1.0))<1e-12,
                 "Integer division disabled the LiDAR constraints");

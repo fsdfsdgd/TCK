@@ -279,9 +279,11 @@ int main(int argc,char** argv)
             <<" peak_rss_mb="<<peakMemoryMB()<<" output="<<output_path<<std::endl;
         bag.close();
         const bool empty=archive.states.empty();
-        if(empty)std::cerr<<"No initialized SLAM trajectory in this window; extend duration to include motion.\n";
-        if(output_ros&&keep_alive)output_ros->keepAlive();
-        return empty?7:0;
+        const bool initialized=vo.is_vio_initialized_&&vo.is_lio_initialized_&&vo.is_livo_initialized_;
+        if(empty||!initialized)
+            std::cerr<<"SLAM initialization incomplete; partial poses are diagnostic output, not a successful fused trajectory.\n";
+        if(output_ros&&keep_alive&&!empty&&initialized)output_ros->keepAlive();
+        return empty||!initialized?7:0;
     } catch(const std::exception& error) {
         std::cerr<<"Bag processing failed: "<<error.what()<<std::endl;
         return 2;

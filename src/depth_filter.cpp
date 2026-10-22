@@ -35,6 +35,8 @@
 #include <vilo/IndexThreadReduce.h>
 #include <vilo/matcher.h>
 #include <vilo/feature_alignment.h>
+#include <vilo/initialization_alignment.h>
+#include <memory>
 
 #include "vilo/vikit/robust_cost.h"
 #include "vilo/vikit/math_utils.h"
@@ -2084,6 +2086,7 @@ void DepthFilter::alignVioLio()
     int n_frame = frame_vec.size();
 
     std::vector<Sophus::SE3> frame_pose_vec, lidar_pose_vec;
+    std::vector<size_t> paired_frame_indices;
     int cursor = 0;
     for(int i=0;i<n_frame;i++)
     {
@@ -2108,6 +2111,7 @@ void DepthFilter::alignVioLio()
                 Sophus::SE3 Twb_frame(Rwb_f, twb_f);
                 frame_pose_vec.push_back(Twb_frame);
                 lidar_pose_vec.push_back(Twb_lidar);
+                paired_frame_indices.push_back(i);
 
                 cursor = j+1;
                 break;
@@ -2169,10 +2173,10 @@ void DepthFilter::alignVioLio()
 
                     Eigen::Vector3d ba = imu_from_last_lidar->ba_;
                     Eigen::Vector3d bg = imu_from_last_lidar->bg_;
-                    vilo::IMU* imu_image_lidar = new vilo::IMU(imu_freq_,
+                    std::unique_ptr<vilo::IMU> imu_image_lidar(new vilo::IMU(imu_freq_,
                                                     imu_na_, imu_ng_,
                                                     imu_naw_, imu_ngw_,
-                                                    ba, bg);
+                                                    ba, bg));
 
                     for(int m=0;m<n_pick;m++)
                     {
@@ -2202,7 +2206,8 @@ void DepthFilter::alignVioLio()
                     Sophus::SE3 Twb_f(Rwb_f, twb_f);
                     frame_pose_vec.push_back(Twb_f);
                     lidar_pose_vec.push_back(Twb_l);
-                    cursor = j+1;
+                    paired_frame_indices.push_back(i);
+                    cursor = j;
                     break;
                 }
             }
@@ -2210,15 +2215,28 @@ void DepthFilter::alignVioLio()
         }
     }
 
-    Eigen::Matrix3d Ril_orient, Rli_position;
-    Eigen::Vector3d tli_position;
-    double scale = 0.0;
-    ba::alignLidarImagePosition(Rli_position, tli_position, scale,
-                                frame_pose_vec, lidar_pose_vec);
-    ba::alignLidarImageOrientation(Ril_orient, frame_pose_vec, lidar_pose_vec);
+    const auto alignment = alignInitializationPoses(frame_pose_vec, lidar_pose_vec);
+    printf("INIT alignment pairs=%zu scale=%.6g position_rmse=%.4f rotation_deg=%.3f accepted=%d\n",
+           frame_pose_vec.size(), alignment.scale, alignment.position_rmse,
+           alignment.rotation_rmse*180.0/M_PI, int(alignment.accepted));
+    // Keep independent VIS/LIS running and retry on subsequent measurements.
+    // In particular, never divide point inverse depths by a collapsed scale.
+    if (!alignment.accepted) return;
+    Eigen::Matrix3d Rli_position = alignment.rotation;
+    Eigen::Vector3d tli_position = alignment.translation;
+    double scale = alignment.scale;
 
     Sophus::SE3 Tbc = frame_handler_->T_b_c_;
-    map_->scaleRotate(Tbc, Ril_orient, Rli_position, tli_position, scale);
+    map_->scaleRotate(Tbc, Rli_position, Rli_position, tli_position, scale);
+
+    // Some early visual keyframes predate the first usable LiDAR scan. The
+    // paired vector is NOT indexed like map_->keyframes_: do not shift every
+    // LiDAR seed onto a different image. Unpaired images keep their aligned pose.
+    std::vector<Sophus::SE3> lidar_seeds;
+    for (const auto& frame : frame_vec)
+        lidar_seeds.emplace_back(frame->getImuRotation(), frame->getImuPosition());
+    for (size_t i = 0; i < paired_frame_indices.size(); ++i)
+        lidar_seeds[paired_frame_indices[i]] = lidar_pose_vec[i];
 
     cursor = 0;
     for(int i=0;i<n_frame;i++)
@@ -2255,7 +2273,7 @@ void DepthFilter::alignVioLio()
         }
     }
 
-    ba::visualMapOptimization(map_, lidar_pose_vec, Tbc);
+    ba::visualMapOptimization(map_, lidar_seeds, Tbc);
 
     frame_handler_->is_livo_initialized_ = true;
     frame_handler_->livo_init_lidar_id_ = last_lidar_->id_;

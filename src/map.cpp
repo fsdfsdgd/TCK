@@ -115,7 +115,9 @@ void Map::scaleRotate(Sophus::SE3& Tbc,
         
       Eigen::Matrix3d rwb_c = kf->getImuRotation();
       Eigen::Vector3d twb_c = kf->getImuPosition();
-      Eigen::Matrix3d new_rwb_c = rwb_c * Rcl_orient;
+      // World-frame alignment acts on the left, for both body attitude and
+      // position. A right multiplication would change the calibrated body axes.
+      Eigen::Matrix3d new_rwb_c = Rcl_orient * rwb_c;
       Eigen::Vector3d new_twb_c = scale * Rlc_position * twb_c + tlc_position;
       Sophus::SE3 new_Twb_c = SE3(new_rwb_c, new_twb_c); 
       Sophus::SE3 new_Tcw = (new_Twb_c * Tbc).inverse();
