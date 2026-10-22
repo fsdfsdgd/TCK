@@ -26,6 +26,8 @@
 #define VILO_DEPTH_FILTER_H_
 
 #include <queue>
+#include <map>
+#include <boost/weak_ptr.hpp>
 #include <boost/thread.hpp>
 #include <boost/function.hpp>
 #include "vilo/global.h"
@@ -176,6 +178,26 @@ public:
   int feature_array_num;
 
   list< LidarPtr > key_lidars_list_;
+
+  // Active geometry is stored in keyframe coordinates, not baked into world
+  // coordinates before the keyframe has finished local bundle adjustment.
+  struct LidarSubmap {
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    struct Scan {
+      EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+      boost::weak_ptr<Lidar> lidar;
+      Sophus::SE3 relative;
+      Eigen::Vector3d velocity;
+    };
+    LidarPtr anchor;
+    pcl::PointCloud<pcl::PointXYZI>::Ptr points;
+    std::vector<Scan,Eigen::aligned_allocator<Scan>> scans;
+  };
+  std::map<int,LidarSubmap> active_lidar_submaps_;
+  void synchronizeLidarSubmaps();
+  int lidarCubeIndex(const Eigen::Vector3d& point) const;
+  void freezeLidarSubmaps();
+  void addLidarSubmap(const pcl::PointCloud<pcl::PointXYZI>::Ptr& features);
   
   pcl::PointCloud<pcl::PointXYZI>::Ptr corner_features_array[4851];
   pcl::PointCloud<pcl::PointXYZI>::Ptr surf_features_array[4851]; 

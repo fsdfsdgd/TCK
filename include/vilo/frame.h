@@ -27,6 +27,7 @@
 
 #include <sophus/se3.h>
 #include <boost/noncopyable.hpp>
+#include <memory>
 #include <boost/thread.hpp>
 #include <vilo/global.h>
 
@@ -59,8 +60,9 @@ public:
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
 
-    IMU* imu_from_last_frame_;
-    IMU* imu_from_last_keyframe_;
+    IMU* imu_from_last_frame_ = nullptr; // Owned by this frame.
+    IMU* imu_from_last_keyframe_ = nullptr; // Non-owning API alias.
+    std::shared_ptr<IMU> key_imu_owner_;
     Eigen::Vector3d ba_, bg_;
     Eigen::Vector3d velocity_;
     Frame* last_kf_;

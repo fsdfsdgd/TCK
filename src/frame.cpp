@@ -70,6 +70,7 @@ Frame::Frame(vilo::AbstractCamera* cam, const cv::Mat& img, double timestamp, SE
 
 Frame::~Frame()
 {
+    delete imu_from_last_frame_;
     int nn=0;
     std::for_each(fts_.begin(), fts_.end(), [&](Feature* i)
     {

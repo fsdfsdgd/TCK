@@ -12,7 +12,8 @@
 #include <sensor_msgs/point_cloud2_iterator.h>
 #include <tf2_ros/static_transform_broadcaster.h>
 #include <tf2_msgs/TFMessage.h>
-#include <pcl/filters/voxel_grid.h>
+#include "slam_archive.h"
+#include "incremental_voxel_map.h"
 #include "vilo/frame_handler_mono.h"
 
 // Called only after DepthFilter::waitUntilIdle(). The map is reconstructed from
@@ -25,7 +26,7 @@ public:
                  const std::string& image_topic, const std::string& right_image_topic,
                  double map_voxel_size, double map_publish_period)
         : world_(world), body_(body), map_voxel_size_(map_voxel_size),
-          map_publish_period_(map_publish_period)
+          map_publish_period_(map_publish_period), map_cache_(map_voxel_size)
     {
         pose_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("/vilo/pose", 10, true);
         lidar_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("/vilo/lidar_pose", 10, true);
@@ -65,18 +66,18 @@ public:
         else image_pub_.publish(image);
     }
 
-    void publish(const std::vector<vilo::LidarPtr>& states, bool update_map,
+    void publish(const SlamArchive::States& states, bool update_map,
                  bool force_map = false)
     {
         if (states.empty()) return;
-        const ros::Time stamp = sensorStamp(states.back()->getTimeStamp());
+        const ros::Time stamp = sensorStamp(states.back().time);
         geometry_msgs::PoseStamped pose;
         pose.header.frame_id = world_;
         pose.header.stamp = stamp;
-        const auto Twb = states.back()->getImuPose();
+        const auto Twb = states.back().Twb;
         pose.pose = toPose(Twb);
         pose_pub_.publish(pose);
-        pose.pose = toPose(states.back()->getLidarPose().inverse());
+        pose.pose = toPose(states.back().Twl);
         lidar_pub_.publish(pose);
 
         nav_msgs::Odometry odom;
@@ -85,7 +86,7 @@ public:
         odom.pose.pose = toPose(Twb);
         // Core velocity is expressed in world, Odometry twist in child frame.
         const Eigen::Vector3d velocity_body = Twb.rotation_matrix().transpose()
-                                             * states.back()->getVelocity();
+                                             * states.back().velocity;
         odom.twist.twist.linear.x = velocity_body.x();
         odom.twist.twist.linear.y = velocity_body.y();
         odom.twist.twist.linear.z = velocity_body.z();
@@ -103,8 +104,8 @@ public:
         for (const auto& state : states) {
             geometry_msgs::PoseStamped p;
             p.header.frame_id = world_;
-            p.header.stamp = sensorStamp(state->getTimeStamp());
-            p.pose = toPose(state->getImuPose());
+            p.header.stamp = sensorStamp(state.time);
+            p.pose = toPose(state.Twb);
             path.poses.push_back(p);
         }
         path_pub_.publish(path);
@@ -138,6 +139,7 @@ private:
     size_t map_input_points_ = 0;
     double map_voxel_size_, map_publish_period_;
     ros::WallTime last_map_publish_;
+    IncrementalVoxelMap map_cache_;
     std::map<double,ros::Time> image_stamps_;
 
     ros::Time sensorStamp(double time) const
@@ -172,36 +174,23 @@ private:
         return tf;
     }
 
-    void publishMap(const std::vector<vilo::LidarPtr>& states, const std_msgs::Header& header)
+    void publishMap(const SlamArchive::States& states, const std_msgs::Header& header)
     {
-        pcl::PointCloud<pcl::PointXYZ>::Ptr points(new pcl::PointCloud<pcl::PointXYZ>);
         for (const auto& state : states) {
-            if (state->id_ != 0 && !state->is_keylidar_) continue;
-            const auto Twl=state->getLidarPose().inverse();
-            if (!Twl.matrix().allFinite()) throw std::runtime_error("Non-finite keyframe pose");
-            for (const auto& p : state->ptr_less_surfs_->points) {
-                const Eigen::Vector3d q=Twl*Eigen::Vector3d(p.x,p.y,p.z);
-                if (!q.allFinite()) throw std::runtime_error("Non-finite SLAM map point");
-                points->push_back(pcl::PointXYZ(q.x(),q.y(),q.z()));
-            }
+            if (state.key) map_cache_.update(state.id,state.Twl,state.features);
         }
-        // Fuse across keyframes, not just within each scan. This is a display
-        // map resolution and does not alter feature extraction/registration.
-        map_input_points_=points->size();
-        pcl::VoxelGrid<pcl::PointXYZ> filter;
-        filter.setLeafSize(map_voxel_size_,map_voxel_size_,map_voxel_size_);
-        filter.setInputCloud(points);
-        pcl::PointCloud<pcl::PointXYZ> fused;
-        filter.filter(fused);
+        map_input_points_=map_cache_.inputPoints();
         sensor_msgs::PointCloud2 msg;
         msg.header=header;
         sensor_msgs::PointCloud2Modifier modifier(msg);
         modifier.setPointCloud2FieldsByString(1,"xyz");
-        modifier.resize(fused.size());
+        modifier.resize(map_cache_.size());
         sensor_msgs::PointCloud2Iterator<float> x(msg,"x"), y(msg,"y"), z(msg,"z");
-        for (const auto& p : fused) { *x=p.x; *y=p.y; *z=p.z; ++x; ++y; ++z; }
+        map_cache_.visit([&](const Eigen::Vector3d& p) {
+            *x=p.x(); *y=p.y(); *z=p.z(); ++x; ++y; ++z;
+        });
         msg.is_dense=true;
-        map_points_=fused.size();
+        map_points_=map_cache_.size();
         map_pub_.publish(msg);
     }
 };

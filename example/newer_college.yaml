@@ -67,13 +67,16 @@ Tbc: !!opencv-matrix
 #          0.0, 0.0, 0.0, 1.0]
 
 
+# From the official bag /tf_static:
+# T_sensor_imu.z=0.007645, T_sensor_lidar.z=0.03618.
+# T_l_b = inverse(T_sensor_lidar) * T_sensor_imu.
 Tlb: !!opencv-matrix
    rows: 4
    cols: 4
    dt: f
    data: [-1.0, 0, 0, -0.006253, 
           0.0, -1.0, 0.0, 0.011775,
-          0.0, 0.0, 1.0, 0.028535,
+          0.0, 0.0, 1.0, -0.028535,
           0.0, 0.0, 0.0, 1.0] 
 
 Tbl: !!opencv-matrix
@@ -82,7 +85,7 @@ Tbl: !!opencv-matrix
    dt: f
    data: [-1.0, 0, 0, -0.006253, 
           0.0, -1.0, 0.0, 0.011775,
-          0.0, 0.0, 1.0, -0.028535,
+          0.0, 0.0, 1.0, 0.028535,
           0.0, 0.0, 0.0, 1.0]        
 
 # IMU noise

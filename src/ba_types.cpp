@@ -78,15 +78,19 @@ ImuCamPose::ImuCamPose(Eigen::Matrix3d &_Rwc, Eigen::Vector3d &_twc, Frame* pF):
     Rcw[0] = _Rwc.transpose();
     tcw[0] = -Rcw[0]*_twc;
     pCamera[0] = pF->cam_;
+    Rwb0 = Rwb;
+    DR.setIdentity();
 }
 
-ImuCamPose::ImuCamPose(Sophus::SE3& T)
+ImuCamPose::ImuCamPose(Sophus::SE3& T):its(0)
 {
     Rwb = T.rotation_matrix();
     twb = T.translation();
+    Rwb0 = Rwb;
+    DR.setIdentity();
 }
 
-ImuCamPose::ImuCamPose(Sophus::SE3& Twb, Sophus::SE3& Tbc, Sophus::SE3& Tbl, Frame* pF)
+ImuCamPose::ImuCamPose(Sophus::SE3& Twb, Sophus::SE3& Tbc, Sophus::SE3& Tbl, Frame* pF):its(0)
 {
     tcw.resize(1);
     Rcw.resize(1);
@@ -105,6 +109,8 @@ ImuCamPose::ImuCamPose(Sophus::SE3& Twb, Sophus::SE3& Tbc, Sophus::SE3& Tbl, Fra
     Rcw[0] = (Twb * Tbc).inverse().rotation_matrix();
     tcw[0] = (Twb * Tbc).inverse().translation();
     pCamera[0] = pF->cam_;
+    Rwb0 = Rwb;
+    DR.setIdentity();
 }
 
 void ImuCamPose::SetParam(const std::vector<Eigen::Matrix3d> &_Rcw, const std::vector<Eigen::Vector3d> &_tcw, const std::vector<Eigen::Matrix3d> &_Rbc,
@@ -125,6 +131,9 @@ void ImuCamPose::SetParam(const std::vector<Eigen::Matrix3d> &_Rcw, const std::v
     }
     Rwb = Rcw[0].transpose()*Rcb[0];
     twb = Rcw[0].transpose()*(tcb[0]-tcw[0]);
+    its = 0;
+    Rwb0 = Rwb;
+    DR.setIdentity();
 }
 
 Eigen::Vector2d ImuCamPose::Project(const Eigen::Vector3d &Xw, int cam_idx) const
@@ -152,7 +161,7 @@ void ImuCamPose::Update(const double *pu)
     its++;
     if(its>=3)
     {
-        normalizeRotation(Rwb);
+        Rwb = normalizeRotation(Rwb);
         its=0;
     }
 
@@ -188,7 +197,7 @@ void ImuCamPose::UpdateW(const double *pu)
         DR(1,2)=0.0;
         DR(2,0)=0.0;
         DR(2,1)=0.0;
-        normalizeRotation(DR);
+        DR = normalizeRotation(DR);
         its=0;
     }
 

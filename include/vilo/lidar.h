@@ -40,6 +40,7 @@
 #include <pcl/features/normal_3d.h>
 #include <pcl/features/feature.h>
 #include <boost/noncopyable.hpp>
+#include <memory>
 #include <boost/thread.hpp>
 #include <opencv2/opencv.hpp>
 #include <Eigen/Core>
@@ -95,6 +96,7 @@ public:
    float ang_res_y_;
 
    bool is_undist_pts_;
+   bool input_ring_time_ = false; // intensity carries hardware ring + seconds.
    cv::Mat project_img_;
    cv::Mat id_img_;
    std::vector<int> scan_sid_vec_;
@@ -108,10 +110,11 @@ public:
    pcl::KdTreeFLANN<pcl::PointXYZI>::Ptr kdtree_surf_;
    Lidar* previous_lidar_;
 
-   IMU* imu_from_last_lidar_;
+   IMU* imu_from_last_lidar_ = nullptr; // Owned by this scan.
    IMUPriorConstraint* prior_constraint_;
    
-   IMU* imu_from_last_keylidar_; 
+   IMU* imu_from_last_keylidar_ = nullptr; // Non-owning API alias.
+   std::shared_ptr<IMU> key_imu_owner_;
    Lidar* last_key_lidar_; 
    bool is_keylidar_;
    
@@ -151,7 +154,7 @@ public:
  
    Lidar();
    Lidar(vilo::AbstractCamera* cam, int w, int h, pcl::PointCloud<pcl::PointXYZI>::Ptr p_cloud );
-   Lidar(pcl::PointCloud<pcl::PointXYZI>::Ptr p_cloud );
+   Lidar(pcl::PointCloud<pcl::PointXYZI>::Ptr p_cloud, bool input_ring_time=false);
    ~Lidar();
 
    void projectLaserToImage(const Eigen::Matrix<double,3,4>& extrinsic,const cv::Mat& image);
@@ -161,7 +164,7 @@ public:
    void setLidarParams();
    void setTbl(Sophus::SE3& Tbl){T_b_l_ = Tbl; T_l_b_ = Tbl.inverse();};
    void registerPoints();
-   void undistPoints(Sophus::SE3& dT, std::vector<double>& pts_ts_vec);
+   void undistPoints(const std::vector<IMUPoint>& imu, const std::vector<double>& pts_ts_vec);
    size_t extractFeatures();
    bool comp (int i,int j) {return (diff_vec_[i] < diff_vec_[j]);}
    void transformToStart(pcl::PointXYZI& pi, pcl::PointXYZI& po, float SCAN_PERIOD, 

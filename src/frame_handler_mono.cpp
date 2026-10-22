@@ -1,3 +1,4 @@
+#include "vilo/imu_timeline.h"
 // This file is part of TCK-VILO:A Tightly-Coupled and Keyframe-Based Visual-Inertial-Lidar Odometry System for Mobile Robots With Adaptive Sensor Reliability Evaluation
 //
 // Copyright(c) 2024, Jun Yin
@@ -86,13 +87,13 @@ void FrameHandlerMono::initialize()
     lidar_motion_model_ = Sophus::SE3(Matrix3d::Identity(), Vector3d::Zero());
     visual_motion_model_ = Sophus::SE3(Matrix3d::Identity(), Vector3d::Zero());
 
-    imu_from_last_keyframe_ = new vilo::IMU(imu_freq_,
+    imu_from_last_keyframe_ = std::make_shared<vilo::IMU>(imu_freq_,
                                            imu_na_,
                                            imu_ng_,
                                            imu_naw_,
                                            imu_ngw_);
 
-    imu_from_last_keylidar_ = new vilo::IMU(imu_freq_,
+    imu_from_last_keylidar_ = std::make_shared<vilo::IMU>(imu_freq_,
                                            imu_na_,
                                            imu_ng_,
                                            imu_naw_,
@@ -126,7 +127,7 @@ void FrameHandlerMono::addLidarImageImu(pcl::PointCloud<pcl::PointXYZI>::Ptr lid
                                         const double& image_ts,
                                         int imu_id1, int imu_id2,
                                         int imu_id3, int imu_id4,
-                                        int type)
+                                        int type, bool input_ring_time)
 {
     struct timeval st,et;
     gettimeofday(&st,NULL);
@@ -169,7 +170,7 @@ void FrameHandlerMono::addLidarImageImu(pcl::PointCloud<pcl::PointXYZI>::Ptr lid
             }
             
             boost::thread t_lidar(&FrameHandlerMono::addLidarImu, this,
-                                lidar, lidar_imu_vec, new_lidar_ts, pts_ts_vec);
+                                lidar, lidar_imu_vec, new_lidar_ts, pts_ts_vec, input_ring_time);
 
             addImageImu(image, frame_imu_vec, image_ts, res);
             t_lidar.join();
@@ -203,14 +204,14 @@ void FrameHandlerMono::addLidarImageImu(pcl::PointCloud<pcl::PointXYZI>::Ptr lid
                 {
                     Eigen::Vector3d ba = new_frame_->ba_;
                     Eigen::Vector3d bg = new_frame_->bg_;
-                    imu_from_last_keyframe_ = new vilo::IMU(imu_freq_,
+                    imu_from_last_keyframe_ = std::make_shared<vilo::IMU>(imu_freq_,
                                                             imu_na_,  imu_ng_,
                                                             imu_naw_,  imu_ngw_,
                                                             ba, bg);
                 }
                 else
                 {
-                    imu_from_last_keyframe_ = new vilo::IMU(imu_freq_,
+                    imu_from_last_keyframe_ = std::make_shared<vilo::IMU>(imu_freq_,
                                                             imu_na_, imu_ng_,
                                                             imu_naw_, imu_ngw_);
                 }
@@ -303,16 +304,18 @@ void FrameHandlerMono::addImageImu(const cv::Mat& img,
 void FrameHandlerMono::addLidarImu(pcl::PointCloud<pcl::PointXYZI>::Ptr p_cloud,
                                 const std::vector<vilo::IMUPoint>& imu_vec,
                                 const double& timestamp,
-                                std::vector<double>& pts_ts_vec)
+                                std::vector<double>& pts_ts_vec, bool input_ring_time)
 {
     struct timeval st,et;
     gettimeofday(&st,NULL);
+#ifdef VILO_DEBUG_OUTPUT
     std::cerr << "[DBG] addLidarImu: input cloud="
           << p_cloud.get()
           << ", use_count=" << p_cloud.use_count()
           << ", points=" << p_cloud->points.size()
           << std::endl;
-    new_lidar_.reset(new Lidar(p_cloud));
+#endif
+    new_lidar_.reset(new Lidar(p_cloud,input_ring_time));
     new_lidar_->setTbl(T_b_l_);
     new_lidar_->setTimeStamp(timestamp);
      
@@ -345,7 +348,7 @@ void FrameHandlerMono::addLidarImu(pcl::PointCloud<pcl::PointXYZI>::Ptr p_cloud,
 
     bool is_undist_pts = true;
     if(is_undist_pts && is_lio_initialized_)
-        new_lidar_->undistPoints(lidar_motion_model_, pts_ts_vec);
+        new_lidar_->undistPoints(imu_vec, pts_ts_vec);
 
     new_lidar_->registerPoints();
 
@@ -394,7 +397,7 @@ FrameHandlerMono::UpdateResult FrameHandlerMono::processFirstFrame()
     m_stamp_et.push_back(make_pair(first_frame_->m_timestamp_s, 1));
     m_grad_mean.push_back(first_frame_->gradMean_);
 
-    imu_from_last_keyframe_ = new vilo::IMU(imu_freq_,
+    imu_from_last_keyframe_ = std::make_shared<vilo::IMU>(imu_freq_,
                                            imu_na_,
                                            imu_ng_,
                                            imu_naw_,
@@ -1164,46 +1167,17 @@ void FrameHandlerMono::preintegrate(const std::vector<vilo::IMUPoint>& imu_vec, 
         else
             t_s = imu_vec[0].t;
 
-        int N = imu_vec.size()-1;
-        for(int i=0;i<N;i++)
-        {
-            Eigen::Vector3d acc, gyro;
-            double dt;
-            if((i==0) && (i<(N-1)))
-            {
-                double tab = imu_vec[i+1].t-imu_vec[i].t;
-                double tini = imu_vec[i].t-t_s;
-                acc = (imu_vec[i].acc + imu_vec[i+1].acc - (imu_vec[i+1].acc-imu_vec[i].acc)*(tini/tab))  *0.5f;
-                gyro = (imu_vec[i].gyro + imu_vec[i+1].gyro - (imu_vec[i+1].gyro-imu_vec[i].gyro)*(tini/tab))*0.5f;
-                dt = imu_vec[i+1].t-t_s;
-            }
-            else if(i<(N-1))
-            {
-                acc = (imu_vec[i].acc + imu_vec[i+1].acc)*0.5f;
-                gyro = (imu_vec[i].gyro + imu_vec[i+1].gyro)*0.5f;
-                dt = imu_vec[i+1].t-imu_vec[i].t;
-            }
-            else if((i>0) && (i==(N-1)))
-            {
-                float tab = imu_vec[i+1].t-imu_vec[i].t;
-                float tend = imu_vec[i+1].t-t_e;
-                acc = (imu_vec[i].acc + imu_vec[i+1].acc - (imu_vec[i+1].acc-imu_vec[i].acc)*(tend/tab))*0.5f;
-                gyro = (imu_vec[i].gyro + imu_vec[i+1].gyro- (imu_vec[i+1].gyro-imu_vec[i].gyro)*(tend/tab))*0.5f;
-                dt = t_e - imu_vec[i].t;
-            }
-            else if((i==0) && (i==(N-1)))
-            {
-                acc = imu_vec[i].acc;
-                gyro = imu_vec[i].gyro;
-                dt = t_e - t_s;
-            }
-
-            imu_from_last_frame->addImuPoint(acc, gyro, imu_from_last_frame->ba_, imu_from_last_frame->bg_, dt); 
-            imu_from_last_keyframe_->addImuPoint(acc, gyro, imu_from_last_keyframe_->ba_, imu_from_last_keyframe_->bg_, dt); 
-        }
+        forImuInterval(imu_vec,t_s,t_e,[&](const Eigen::Vector3d& acc,
+                                            const Eigen::Vector3d& gyro,double dt) {
+            imu_from_last_frame->addImuPoint(acc,gyro,imu_from_last_frame->ba_,
+                                             imu_from_last_frame->bg_,dt);
+            imu_from_last_keyframe_->addImuPoint(acc,gyro,imu_from_last_keyframe_->ba_,
+                                                 imu_from_last_keyframe_->bg_,dt);
+        });
 
         new_frame_->imu_from_last_frame_ = imu_from_last_frame;
-        new_frame_->imu_from_last_keyframe_ = imu_from_last_keyframe_;
+        new_frame_->key_imu_owner_ = imu_from_last_keyframe_;
+        new_frame_->imu_from_last_keyframe_ = new_frame_->key_imu_owner_.get();
 
     }
 
@@ -1223,47 +1197,18 @@ void FrameHandlerMono::preintegrate(const std::vector<vilo::IMUPoint>& imu_vec, 
         double t_s = last_lidar_->getTimeStamp();
         double t_e = new_lidar_->getTimeStamp();
 
-        int N = imu_vec.size()-1;
-        for(int i=0;i<N;i++)
-        {
-            Eigen::Vector3d acc, gyro;
-            double dt;
-            if((i==0) && (i<(N-1)))
-            {
-                double tab = imu_vec[i+1].t-imu_vec[i].t;
-                double tini = imu_vec[i].t-t_s;
-                acc = (imu_vec[i].acc + imu_vec[i+1].acc - (imu_vec[i+1].acc-imu_vec[i].acc)*(tini/tab))  *0.5f;
-                gyro = (imu_vec[i].gyro + imu_vec[i+1].gyro - (imu_vec[i+1].gyro-imu_vec[i].gyro)*(tini/tab))*0.5f;
-                dt = imu_vec[i+1].t-t_s;
-            }
-            else if(i<(N-1))
-            {
-                acc = (imu_vec[i].acc + imu_vec[i+1].acc)*0.5f;
-                gyro = (imu_vec[i].gyro + imu_vec[i+1].gyro)*0.5f;
-                dt = imu_vec[i+1].t-imu_vec[i].t;
-            }
-            else if((i>0) && (i==(N-1)))
-            {
-                float tab = imu_vec[i+1].t-imu_vec[i].t;
-                float tend = imu_vec[i+1].t-t_e;
-                acc = (imu_vec[i].acc + imu_vec[i+1].acc - (imu_vec[i+1].acc-imu_vec[i].acc)*(tend/tab))*0.5f;
-                gyro = (imu_vec[i].gyro + imu_vec[i+1].gyro- (imu_vec[i+1].gyro-imu_vec[i].gyro)*(tend/tab))*0.5f;
-                dt = t_e - imu_vec[i].t;
-            }
-            else if((i==0) && (i==(N-1)))
-            {
-                acc = imu_vec[i].acc;
-                gyro = imu_vec[i].gyro;
-                dt = t_e - t_s;
-            }
-
-            imu_from_last_lidar->addImuPoint(acc, gyro, imu_from_last_lidar->ba_, imu_from_last_lidar->bg_, dt); 
-            imu_from_last_keylidar_->addImuPoint(acc, gyro, imu_from_last_keylidar_->ba_, imu_from_last_keylidar_->bg_, dt); 
-        }
+        forImuInterval(imu_vec,t_s,t_e,[&](const Eigen::Vector3d& acc,
+                                            const Eigen::Vector3d& gyro,double dt) {
+            imu_from_last_lidar->addImuPoint(acc,gyro,imu_from_last_lidar->ba_,
+                                             imu_from_last_lidar->bg_,dt);
+            imu_from_last_keylidar_->addImuPoint(acc,gyro,imu_from_last_keylidar_->ba_,
+                                                 imu_from_last_keylidar_->bg_,dt);
+        });
 
         new_lidar_->imu_from_last_lidar_ = imu_from_last_lidar;
         new_lidar_->last_key_lidar_ = last_key_lidar_;
-        new_lidar_->imu_from_last_keylidar_ = imu_from_last_keylidar_;
+        new_lidar_->key_imu_owner_ = imu_from_last_keylidar_;
+        new_lidar_->imu_from_last_keylidar_ = new_lidar_->key_imu_owner_.get();
 
         Eigen::AngleAxisd aa(imu_from_last_keylidar_->delta_q_);
         double angle = aa.angle() / 3.14 * 180;
@@ -1273,13 +1218,13 @@ void FrameHandlerMono::preintegrate(const std::vector<vilo::IMUPoint>& imu_vec, 
             new_lidar_->is_keylidar_ = true;
 
             if(is_lio_initialized_)
-                imu_from_last_keylidar_ = new vilo::IMU(imu_freq_,
+                imu_from_last_keylidar_ = std::make_shared<vilo::IMU>(imu_freq_,
                                                         imu_na_, imu_ng_,
                                                         imu_naw_, imu_ngw_,
                                                         last_lidar_->ba_,
                                                         last_lidar_->bg_);
             else
-                imu_from_last_keylidar_ = new vilo::IMU(imu_freq_,
+                imu_from_last_keylidar_ = std::make_shared<vilo::IMU>(imu_freq_,
                                                         imu_na_, imu_ng_,
                                                         imu_naw_, imu_ngw_);
         }

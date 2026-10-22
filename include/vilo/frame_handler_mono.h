@@ -68,7 +68,7 @@ public:
   void addLidarImu(pcl::PointCloud<pcl::PointXYZI>::Ptr p_cloud,
                    const std::vector<vilo::IMUPoint>& imu_vec, 
                    const double& timestamp,
-                   std::vector<double>& pts_ts_vec);
+                   std::vector<double>& pts_ts_vec, bool input_ring_time=false);
 
   void addLidarImageImu(pcl::PointCloud<pcl::PointXYZI>::Ptr lidar,
                         cv::Mat& image,
@@ -78,7 +78,7 @@ public:
                         const double& image_ts,
                         int imu_id1, int imu_id2,
                         int imu_id3, int imu_id4,
-                        int type);
+                        int type, bool input_ring_time=false);
 
   const set<FramePtr>& coreKeyframes() { return core_kfs_; }
 
@@ -100,8 +100,8 @@ public:
   Lidar* last_key_lidar_; 
 
   std::string setting_file_;
-  vilo::IMU* imu_from_last_keyframe_;            
-  vilo::IMU* imu_from_last_keylidar_; 
+  std::shared_ptr<vilo::IMU> imu_from_last_keyframe_;
+  std::shared_ptr<vilo::IMU> imu_from_last_keylidar_;
   bool is_imu_used_;
   bool is_vio_initialized_;
   bool is_lio_initialized_;

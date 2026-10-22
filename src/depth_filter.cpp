@@ -1186,6 +1186,85 @@ void DepthFilter::addLidar(LidarPtr lidar)
     }
 }
 
+void DepthFilter::synchronizeLidarSubmaps()
+{
+    for(auto& entry:active_lidar_submaps_) {
+        auto& submap=entry.second;
+        const Sophus::SE3 Twl=submap.anchor->getLidarPose().inverse();
+        for(const auto& scan:submap.scans) {
+            auto lidar=scan.lidar.lock();
+            if(!lidar || lidar==submap.anchor)continue;
+            Sophus::SE3 Tlw=(Twl*scan.relative).inverse();
+            lidar->setLidarPose(Tlw);
+            lidar->setVelocity(Twl.rotation_matrix()*scan.velocity);
+        }
+    }
+}
+
+int DepthFilter::lidarCubeIndex(const Eigen::Vector3d& p) const
+{
+    const int i=int(std::floor((p.x()+25.0)/50.0))+laserCloudCenWidth;
+    const int j=int(std::floor((p.y()+25.0)/50.0))+laserCloudCenHeight;
+    const int k=int(std::floor((p.z()+25.0)/50.0))+laserCloudCenDepth;
+    if(i<0||i>=laserCloudWidth||j<0||j>=laserCloudHeight||k<0||k>=laserCloudDepth)return -1;
+    return i+laserCloudWidth*j+laserCloudWidth*laserCloudHeight*k;
+}
+
+void DepthFilter::freezeLidarSubmaps()
+{
+    if(!frame_handler_->is_lio_initialized_ || key_lidars_list_.empty())return;
+    const int oldest=key_lidars_list_.front()->id_;
+    std::set<int> changed;
+    for(auto it=active_lidar_submaps_.begin();it!=active_lidar_submaps_.end();) {
+        if(it->first>=oldest){++it;continue;}
+        const auto& submap=it->second;
+        const Sophus::SE3 Twl=submap.anchor->getLidarPose().inverse();
+        for(const auto& point:submap.points->points) {
+            const Eigen::Vector3d p=Twl*Eigen::Vector3d(point.x,point.y,point.z);
+            const int cube=lidarCubeIndex(p);
+            if(cube<0)continue;
+            pcl::PointXYZI world=point;
+            world.x=p.x();world.y=p.y();world.z=p.z();
+            surf_features_array[cube]->push_back(world);
+            changed.insert(cube);
+        }
+        it=active_lidar_submaps_.erase(it);
+    }
+    pcl::VoxelGrid<pcl::PointXYZI> filter;
+    filter.setLeafSize(0.8,0.8,0.8);
+    for(int cube:changed) {
+        pcl::PointCloud<pcl::PointXYZI>::Ptr reduced(new pcl::PointCloud<pcl::PointXYZI>);
+        filter.setInputCloud(surf_features_array[cube]);
+        filter.filter(*reduced);
+        surf_features_array[cube]=reduced;
+    }
+}
+
+void DepthFilter::addLidarSubmap(const pcl::PointCloud<pcl::PointXYZI>::Ptr& features)
+{
+    LidarPtr anchor=(new_lidar_->is_keylidar_ || !last_keylidar_)?new_lidar_:last_keylidar_;
+    auto& submap=active_lidar_submaps_[anchor->id_];
+    if(!submap.anchor) {
+        submap.anchor=anchor;
+        submap.points.reset(new pcl::PointCloud<pcl::PointXYZI>);
+    }
+    const Sophus::SE3 relative=anchor->getLidarPose()*new_lidar_->getLidarPose().inverse();
+    for(const auto& point:features->points) {
+        const Eigen::Vector3d p=relative*Eigen::Vector3d(point.x,point.y,point.z);
+        pcl::PointXYZI local=point;
+        local.x=p.x();local.y=p.y();local.z=p.z();
+        submap.points->push_back(local);
+    }
+    pcl::VoxelGrid<pcl::PointXYZI> filter;
+    filter.setLeafSize(0.8,0.8,0.8);
+    filter.setInputCloud(submap.points);
+    pcl::PointCloud<pcl::PointXYZI>::Ptr reduced(new pcl::PointCloud<pcl::PointXYZI>);
+    filter.filter(*reduced);
+    submap.points=reduced;
+    submap.scans.push_back({new_lidar_,relative,
+        anchor->getLidarPose().rotation_matrix()*new_lidar_->getVelocity()});
+}
+
 void DepthFilter::trackLidarLocalMap()
 {
     if(new_lidar_->id_==0)
@@ -1196,6 +1275,7 @@ void DepthFilter::trackLidarLocalMap()
     }
  
     map_->addNewLidar(new_lidar_);
+    synchronizeLidarSubmaps();
   
     if(frame_handler_->is_lio_initialized_ )
         predictWithImu();
@@ -1435,12 +1515,30 @@ void DepthFilter::trackLidarLocalMap()
         }
     }
 
+    freezeLidarSubmaps();
     local_map->clear();
     for (int i = 0; i < valid_num; i++)
     {
         assert(valid_id[i]>=0 && valid_id[i]<=4850);
         *local_map += *surf_features_array[valid_id[i]];
     }
+    const std::set<int> valid_cubes(valid_id,valid_id+valid_num);
+    for(const auto& entry:active_lidar_submaps_) {
+        const auto& submap=entry.second;
+        const Sophus::SE3 Twl=submap.anchor->getLidarPose().inverse();
+        for(const auto& point:submap.points->points) {
+            const Eigen::Vector3d p=Twl*Eigen::Vector3d(point.x,point.y,point.z);
+            if(!valid_cubes.count(lidarCubeIndex(p)))continue;
+            pcl::PointXYZI world=point;
+            world.x=p.x();world.y=p.y();world.z=p.z();
+            local_map->push_back(world);
+        }
+    }
+    pcl::PointCloud<pcl::PointXYZI>::Ptr reduced_map(new pcl::PointCloud<pcl::PointXYZI>);
+    surf_downsize_filter.setLeafSize(0.8,0.8,0.8);
+    surf_downsize_filter.setInputCloud(local_map);
+    surf_downsize_filter.filter(*reduced_map);
+    local_map=reduced_map;
     gettimeofday(&et,NULL);
     float tbuildmap = (et.tv_sec-st.tv_sec)*1000000+(et.tv_usec-st.tv_usec);
     
@@ -1476,7 +1574,7 @@ void DepthFilter::trackLidarLocalMap()
                 p_w.x = pW.x(); p_w.y = pW.y(); p_w.z = pW.z();
                 p_w.intensity = p_l.intensity;
 
-                local_map_kd_tree->nearestKSearch(p_w, 5, pointSearchInd, pointSearchSqDis);
+                if(local_map_kd_tree->nearestKSearch(p_w,5,pointSearchInd,pointSearchSqDis)!=5)continue;
 
                 Eigen::Matrix<double, 5, 3> matA0;
                 Eigen::Matrix<double, 5, 1> matB0 = -1 * Eigen::Matrix<double, 5, 1>::Ones();
@@ -1543,43 +1641,8 @@ void DepthFilter::trackLidarLocalMap()
         T_map_wf = new_lidar_->getLidarPose().inverse();
     } 
 
-    for (int i = 0; i < n_cur_surf_features; i++)
-    {
-        Eigen::Vector3d pOri(cur_surf_features->points[i].x, cur_surf_features->points[i].y, cur_surf_features->points[i].z);
-        Eigen::Vector3d pW = T_map_wf * pOri;
-        p_w.x = pW.x(); p_w.y = pW.y(); p_w.z = pW.z();
-        p_w.intensity = p_l.intensity;
-
-        int cubeI = int((p_w.x + 25.0) / 50.0) + laserCloudCenWidth;
-        int cubeJ = int((p_w.y + 25.0) / 50.0) + laserCloudCenHeight;
-        int cubeK = int((p_w.z + 25.0) / 50.0) + laserCloudCenDepth;
-
-        if (p_w.x + 25.0 < 0)
-            cubeI--;
-        if (p_w.y + 25.0 < 0)
-            cubeJ--;
-        if (p_w.z + 25.0 < 0)
-            cubeK--;
-
-        if (cubeI >= 0 && cubeI < laserCloudWidth &&
-            cubeJ >= 0 && cubeJ < laserCloudHeight &&
-            cubeK >= 0 && cubeK < laserCloudDepth)
-        {
-            int cubeInd = cubeI + laserCloudWidth * cubeJ + laserCloudWidth * laserCloudHeight * cubeK;
-            surf_features_array[cubeInd]->push_back(p_w);
-        }
-    }
-
-    for (int i = 0; i < valid_num; i++)
-    {
-        int ind = valid_id[i];
-
-        pcl::PointCloud<pcl::PointXYZI>::Ptr tmpSurf(new pcl::PointCloud<pcl::PointXYZI>());
-        surf_downsize_filter.setInputCloud(surf_features_array[ind]);
-        surf_downsize_filter.setLeafSize(0.8, 0.8,0.8);
-        surf_downsize_filter.filter(*tmpSurf);
-        surf_features_array[ind] = tmpSurf;
-    }
+    synchronizeLidarSubmaps();
+    addLidarSubmap(cur_surf_features);
 
     lidar_local_map_ = local_map;
     
@@ -1681,7 +1744,7 @@ void DepthFilter::liLocalMapping(list< LidarPtr >& key_lidars_list,
             p_w.x = pW.x(); p_w.y = pW.y(); p_w.z = pW.z();
             p_w.intensity = p_l.intensity;
 
-            local_map_kd_tree->nearestKSearch(p_w, 5, ids, sq_dis);
+            if(local_map_kd_tree->nearestKSearch(p_w,5,ids,sq_dis)!=5)continue;
 
             Eigen::Matrix<double, 5, 3> matA0;
             Eigen::Matrix<double, 5, 1> matB0 = -1 * Eigen::Matrix<double, 5, 1>::Ones();
@@ -1868,6 +1931,7 @@ void DepthFilter::lioInitialization()
         pcl::KdTreeFLANN<pcl::PointXYZI>::Ptr local_map_kd_tree(new pcl::KdTreeFLANN<pcl::PointXYZI>());
         local_map_kd_tree->setInputCloud(lidar_local_map_);
         liLocalMapping(lidars_list, lidar_local_map_, local_map_kd_tree, false);
+        synchronizeLidarSubmaps();
 
         Sophus::SE3 Tlw_cur = new_lidar_->getLidarPose();
         Sophus::SE3 Tlw_ref = last_lidar_->getLidarPose();

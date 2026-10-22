@@ -1,457 +1,289 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <vector>
+#include <sys/resource.h>
 
-#include <Eigen/Core>
 #include <opencv2/core.hpp>
-
 #include <ros/ros.h>
 #include <rosbag/bag.h>
 #include <rosbag/view.h>
-
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/image_encodings.h>
 #include <sensor_msgs/point_cloud2_iterator.h>
-
-#include <pcl/point_cloud.h>
-#include <pcl/point_types.h>
-
 #include "vilo/frame_handler_mono.h"
 #include "vilo/imu.h"
 #include "vilo/map.h"
 #include "ros_bag_output.h"
 
-struct ImageSample
-{
-    double t;
-    sensor_msgs::ImageConstPtr message;
-};
-
-struct ImuSample
-{
-    double t;
-    double ax, ay, az;
-    double gx, gy, gz;
-};
-
-struct PointSample
-{
-    uint32_t t_ns;
-    pcl::PointXYZI point;
-};
-
-struct LidarSample
-{
-    double t;
-    double start;
+struct LidarSample {
+    double t=0, start=0;
     pcl::PointCloud<pcl::PointXYZI>::Ptr cloud;
     std::vector<double> point_times;
 };
 
-static bool searchImu(
-    const std::vector<vilo::IMUPoint>& imu,
-    double last_t, double current_t, int& start, int& end)
+static bool searchImu(const std::vector<vilo::IMUPoint>& imu,
+                      double first,double last,int& start,int& end)
 {
-    start = -1;
-    end = -1;
-
-    for (int i = 0; i < static_cast<int>(imu.size()); ++i)
-    {
-        if (imu[i].t <= last_t) start = i;
-        if (imu[i].t >= current_t) { end = i; break; }
-    }
-
-    return current_t > last_t && start >= 0 && end > start;
+    auto after=std::upper_bound(imu.begin(),imu.end(),first,
+        [](double t,const vilo::IMUPoint& p){return t<p.t;});
+    auto finish=std::lower_bound(imu.begin(),imu.end(),last,
+        [](const vilo::IMUPoint& p,double t){return p.t<t;});
+    if (last<=first || after==imu.begin() || finish==imu.end()) return false;
+    start=int(after-imu.begin())-1;
+    end=int(finish-imu.begin());
+    return end>start;
 }
 
-int main(int argc, char** argv)
+static bool decodeScan(const sensor_msgs::PointCloud2& msg,LidarSample& scan)
 {
-    ros::init(argc, argv, "test_vilo_bag");
-    ros::Time::init();
-
-    std::string bag_path;
-    std::string calib = "example/newer_college.yaml";
-
-    std::string image_topic = "/camera/infra1/image_rect_raw";
-    std::string right_image_topic = "/camera/infra2/image_rect_raw";
-    std::string lidar_topic = "/os1_cloud_node/points";
-    std::string imu_topic = "/os1_cloud_node/imu";
-
-    double offset = 0.0;
-    double duration = 8.0;
-    double map_voxel_size = 0.2, map_publish_period = 1.0;
-    std::string output_path = "trajectory_lidar.tum";
-    bool publish_ros = false, keep_alive = false;
-    std::string world_frame = "vilo_world", body_frame = "vilo_body";
-
-    for (int i = 1; i < argc; ++i)
-    {
-        std::string arg(argv[i]);
-        const auto pos = arg.find('=');
-        if (pos == std::string::npos) continue;
-
-        const std::string key = arg.substr(0, pos);
-        const std::string value = arg.substr(pos + 1);
-
-        if (key == "bag") bag_path = value;
-        else if (key == "calib") calib = value;
-        else if (key == "image_topic") image_topic = value;
-        else if (key == "right_image_topic") right_image_topic = value;
-        else if (key == "lidar_topic") lidar_topic = value;
-        else if (key == "imu_topic") imu_topic = value;
-        else if (key == "offset") offset = std::stod(value);
-        else if (key == "duration") duration = std::stod(value);
-        else if (key == "map_voxel_size") map_voxel_size = std::stod(value);
-        else if (key == "map_publish_period") map_publish_period = std::stod(value);
-        else if (key == "output") output_path = value;
-        else if (key == "publish") publish_ros = value == "true" || value == "1";
-        else if (key == "keep_alive") keep_alive = value == "true" || value == "1";
-        else if (key == "world_frame") world_frame = value;
-        else if (key == "body_frame") body_frame = value;
+    struct Point { uint32_t time; pcl::PointXYZI value; };
+    std::vector<Point> points;
+    const size_t count=size_t(msg.width)*msg.height;
+    points.reserve(count);
+    sensor_msgs::PointCloud2ConstIterator<float> x(msg,"x"),y(msg,"y"),z(msg,"z");
+    sensor_msgs::PointCloud2ConstIterator<uint32_t> t(msg,"t");
+    sensor_msgs::PointCloud2ConstIterator<uint8_t> ring(msg,"ring");
+    for (size_t i=0;i<count;++i,++x,++y,++z,++t,++ring) {
+        if (!std::isfinite(*x)||!std::isfinite(*y)||!std::isfinite(*z) ||
+            (*x==0&&*y==0&&*z==0)) continue;
+        Point point;
+        point.time=*t;
+        point.value.x=*x; point.value.y=*y; point.value.z=*z;
+        if(*ring>=64)throw std::runtime_error("Expected an Ouster-64 hardware ring in [0,63]");
+        point.value.intensity=float(*ring)+float(*t)*1e-9f;
+        points.push_back(point);
     }
+    if (points.size()<11) return false;
+    std::stable_sort(points.begin(),points.end(),
+        [](const Point& a,const Point& b){return a.time<b.time;});
+    scan=LidarSample();
+    scan.start=msg.header.stamp.toSec();
+    scan.cloud.reset(new pcl::PointCloud<pcl::PointXYZI>);
+    scan.cloud->reserve(points.size());
+    scan.point_times.reserve(points.size());
+    for (const auto& point:points) {
+        scan.cloud->push_back(point.value);
+        scan.point_times.push_back(double(point.time)*1e-9);
+    }
+    scan.t=scan.start+scan.point_times.back();
+    scan.cloud->is_dense=true;
+    return scan.start>0;
+}
 
-    if (bag_path.empty() || offset < 0 || duration <= 0 ||
-        !std::isfinite(map_voxel_size) || map_voxel_size <= 0 ||
-        !std::isfinite(map_publish_period) || map_publish_period < 0)
-    {
-        std::cerr
-            << "Usage: test_vilo_bag bag=FILE.bag "
-            << "calib=FILE.yaml offset=0 duration=8 "
-            << "map_voxel_size=0.2 map_publish_period=1.0\n";
+static double peakMemoryMB()
+{
+    struct rusage usage{};
+    getrusage(RUSAGE_SELF,&usage);
+    return usage.ru_maxrss/1024.0;
+}
+
+int main(int argc,char** argv)
+{
+    ros::init(argc,argv,"test_vilo_bag");
+    ros::Time::init();
+    std::string bag_path,calib="example/newer_college.yaml";
+    std::string image_topic="/camera/infra1/image_rect_raw";
+    std::string right_image_topic="/camera/infra2/image_rect_raw";
+    std::string lidar_topic="/os1_cloud_node/points",imu_topic="/os1_cloud_node/imu";
+    std::string output_path="trajectory_lidar.tum",world="vilo_world",body="vilo_body";
+    double offset=0,duration=8,map_voxel_size=0.2,map_publish_period=1;
+    bool publish=false,keep_alive=false;
+    for (int i=1;i<argc;++i) {
+        std::string arg=argv[i];
+        auto pos=arg.find('=');
+        if (pos==std::string::npos) continue;
+        auto key=arg.substr(0,pos),value=arg.substr(pos+1);
+        if(key=="bag")bag_path=value;
+        else if(key=="calib")calib=value;
+        else if(key=="image_topic")image_topic=value;
+        else if(key=="right_image_topic")right_image_topic=value;
+        else if(key=="lidar_topic")lidar_topic=value;
+        else if(key=="imu_topic")imu_topic=value;
+        else if(key=="output")output_path=value;
+        else if(key=="world_frame")world=value;
+        else if(key=="body_frame")body=value;
+        else if(key=="offset")offset=std::stod(value);
+        else if(key=="duration")duration=std::stod(value);
+        else if(key=="map_voxel_size")map_voxel_size=std::stod(value);
+        else if(key=="map_publish_period")map_publish_period=std::stod(value);
+        else if(key=="publish")publish=value=="true"||value=="1";
+        else if(key=="keep_alive")keep_alive=value=="true"||value=="1";
+    }
+    if(bag_path.empty()||!std::isfinite(offset)||offset<0||
+       !std::isfinite(duration)||duration<=0||!std::isfinite(map_voxel_size)||
+       map_voxel_size<=0||!std::isfinite(map_publish_period)||map_publish_period<0) {
+        std::cerr<<"Usage: test_vilo_bag bag=FILE calib=FILE offset=0 duration=8\n";
         return 1;
     }
-
-    std::vector<ImageSample> images;
-    std::vector<LidarSample> lidars;
-    std::vector<ImuSample> imus;
-    ros::Time begin, end;
-
-    try
-    {
+    try {
         rosbag::Bag bag;
-        bag.open(bag_path, rosbag::bagmode::Read);
-
-        rosbag::View all_view(bag);
-        double begin_sec = all_view.getBeginTime().toSec() + offset;
-        double end_sec = begin_sec + duration;
-
-        begin.fromSec(begin_sec);
-        end.fromSec(end_sec);
-
-        std::vector<std::string> topics = {
-            image_topic, lidar_topic, imu_topic
-        };
-
-        rosbag::View view(
-            bag, rosbag::TopicQuery(topics), begin, end);
-
-        std::cout << "Reading Bag: " << bag_path << '\n';
-        std::cout << "Time window: " << begin_sec
-                  << " - " << end_sec << '\n';
-
-        for (const rosbag::MessageInstance& item : view)
-        {
-            const std::string topic = item.getTopic();
-
-            if (topic == image_topic)
-            {
-                auto msg = item.instantiate<sensor_msgs::Image>();
-                if (!msg) continue;
-
-                if (msg->encoding !=
-                    sensor_msgs::image_encodings::MONO8)
-                {
-                    std::cerr << "Unsupported image encoding: "
-                              << msg->encoding << '\n';
-                    continue;
-                }
-
-                if (msg->data.size() <
-                    static_cast<size_t>(msg->step) * msg->height)
-                    continue;
-
-                ImageSample sample;
-                sample.t = msg->header.stamp.toSec();
-                // Retain one owned image buffer for both SLAM and ROS display.
-                // The visual frontend clones its input before building frames.
-                sample.message = msg;
-
-                if (sample.t > 0)
-                    images.push_back(std::move(sample));
-            }
-            else if (topic == imu_topic)
-            {
-                auto msg = item.instantiate<sensor_msgs::Imu>();
-                if (!msg) continue;
-
-                ImuSample sample;
-                sample.t = msg->header.stamp.toSec();
-                sample.ax = msg->linear_acceleration.x;
-                sample.ay = msg->linear_acceleration.y;
-                sample.az = msg->linear_acceleration.z;
-                sample.gx = msg->angular_velocity.x;
-                sample.gy = msg->angular_velocity.y;
-                sample.gz = msg->angular_velocity.z;
-
-                if (sample.t > 0)
-                    imus.push_back(sample);
-            }
-            else if (topic == lidar_topic)
-            {
-                auto msg = item.instantiate<sensor_msgs::PointCloud2>();
-                if (!msg) continue;
-
-                LidarSample sample;
-                sample.start = msg->header.stamp.toSec();
-                sample.cloud.reset(
-                    new pcl::PointCloud<pcl::PointXYZI>);
-
-                std::vector<PointSample> points;
-                points.reserve(
-                    static_cast<size_t>(msg->width) * msg->height);
-
-                try
-                {
-                    sensor_msgs::PointCloud2ConstIterator<float>
-                        x(*msg, "x"), y(*msg, "y"), z(*msg, "z");
-
-                    sensor_msgs::PointCloud2ConstIterator<uint32_t>
-                        t(*msg, "t");
-
-                    sensor_msgs::PointCloud2ConstIterator<uint8_t>
-                        ring(*msg, "ring");
-
-                    const size_t n =
-                        static_cast<size_t>(msg->width) * msg->height;
-
-                    for (size_t i = 0; i < n;
-                         ++i, ++x, ++y, ++z, ++t, ++ring)
-                    {
-                        if (!std::isfinite(*x) ||
-                            !std::isfinite(*y) ||
-                            !std::isfinite(*z))
-                            continue;
-
-                        if (*x == 0 && *y == 0 && *z == 0)
-                            continue;
-
-                        PointSample p;
-                        p.t_ns = *t;
-                        p.point.x = *x;
-                        p.point.y = *y;
-                        p.point.z = *z;
-
-                        // The current TCK-VILO lidar pipeline
-                        // recalculates scan-row information itself.
-                        p.point.intensity = static_cast<float>(*t) * 1e-9f;
-
-                        points.push_back(p);
-                    }
-                }
-                catch (const std::runtime_error& e)
-                {
-                    std::cerr << "Invalid PointCloud2 fields: "
-                              << e.what() << '\n';
-                    continue;
-                }
-
-                // TCK-VILO deskewing expects point times to
-                // follow the scan's temporal order.
-                std::stable_sort(
-                    points.begin(), points.end(),
-                    [](const PointSample& a, const PointSample& b)
-                    {
-                        return a.t_ns < b.t_ns;
-                    });
-
-                for (const auto& p : points)
-                {
-                    sample.cloud->points.push_back(p.point);
-                    sample.point_times.push_back(
-                        static_cast<double>(p.t_ns) * 1e-9);
-                }
-
-                if (sample.cloud->points.size() >= 10)
-                {
-                    sample.t = sample.start + sample.point_times.back();
-                    sample.cloud->width =
-                        static_cast<uint32_t>(
-                            sample.cloud->points.size());
-                    sample.cloud->height = 1;
-                    sample.cloud->is_dense = true;
-                    lidars.push_back(std::move(sample));
-                }
-            }
+        bag.open(bag_path,rosbag::bagmode::Read);
+        rosbag::View all(bag);
+        ros::Time begin,end,imu_begin,imu_end;
+        begin.fromSec(all.getBeginTime().toSec()+offset);
+        end.fromSec(begin.toSec()+duration);
+        imu_begin.fromSec(std::max(0.0,begin.toSec()-0.2));
+        imu_end.fromSec(end.toSec()+0.2);
+        std::cout<<"Streaming Bag: "<<bag_path<<"\nTime window: "
+                 <<std::fixed<<std::setprecision(6)<<begin.toSec()<<" - "<<end.toSec()<<'\n';
+        // IMU is small; retain it for bracketed random-access integration.
+        // Images/clouds are decoded only at the current processing cursor.
+        std::vector<vilo::IMUPoint> imu;
+        rosbag::View imu_view(bag,rosbag::TopicQuery(std::vector<std::string>{imu_topic}),
+                             imu_begin,imu_end);
+        for(const auto& item:imu_view) {
+            auto msg=item.instantiate<sensor_msgs::Imu>();
+            if(!msg||msg->header.stamp.isZero())continue;
+            imu.emplace_back(Eigen::Vector3d(msg->linear_acceleration.x,msg->linear_acceleration.y,msg->linear_acceleration.z),
+                             Eigen::Vector3d(msg->angular_velocity.x,msg->angular_velocity.y,msg->angular_velocity.z),
+                             msg->header.stamp.toSec());
         }
+        std::stable_sort(imu.begin(),imu.end(),
+            [](const vilo::IMUPoint& a,const vilo::IMUPoint& b){return a.t<b.t;});
+        if(imu.size()<10)throw std::runtime_error("Not enough IMU samples");
+        for(size_t i=1;i<imu.size();++i)
+            if(imu[i].t<=imu[i-1].t)throw std::runtime_error("Non-increasing IMU sensor timestamps");
 
+        rosbag::View images(bag,rosbag::TopicQuery(std::vector<std::string>{image_topic}),begin,end);
+        rosbag::View lidars(bag,rosbag::TopicQuery(std::vector<std::string>{lidar_topic}),begin,end);
+        if(images.size()<10||lidars.size()<2)throw std::runtime_error("Missing image/LiDAR topic or short bag window");
+        std::cout<<"Images: "<<images.size()<<"\nLidars: "<<lidars.size()<<"\nIMUs: "<<imu.size()<<'\n';
+
+        vilo::FrameHandlerMono vo(calib,false);
+        vo.start();
+        std::unique_ptr<RosBagOutput> output_ros;
+        if(publish)output_ros.reset(new RosBagOutput(world,body,vo.T_b_c_,vo.T_b_l_,
+            image_topic,right_image_topic,map_voxel_size,map_publish_period));
+        std::unique_ptr<rosbag::View> right_view;
+        rosbag::View::iterator right_it;
+        sensor_msgs::ImageConstPtr next_right;
+        if(output_ros&&!right_image_topic.empty()) {
+            right_view.reset(new rosbag::View(bag,
+                rosbag::TopicQuery(std::vector<std::string>{right_image_topic}),begin,end));
+            right_it=right_view->begin();
+            if(right_it==right_view->end())ROS_WARN_STREAM("No right image topic: "<<right_image_topic);
+        }
+        std::ofstream trajectory_file(output_path);
+        if(!trajectory_file)throw std::runtime_error("Cannot create trajectory output: "+output_path);
+        SlamArchive archive;
+        auto lidar_it=lidars.begin();
+        LidarSample pending;
+        double last_read_lidar=0;
+        auto next_scan=[&]() {
+            while(lidar_it!=lidars.end()) {
+                auto message=lidar_it->instantiate<sensor_msgs::PointCloud2>();
+                ++lidar_it;
+                if(!message||!decodeScan(*message,pending))continue;
+                if(pending.t<=last_read_lidar)throw std::runtime_error("Non-increasing LiDAR sensor timestamps");
+                last_read_lidar=pending.t;
+                return true;
+            }
+            pending=LidarSample();
+            return false;
+        };
+        bool have_scan=next_scan(),lidar_started=false;
+        double last_image=0,last_lidar=0,last_read_image=0;
+        size_t processed_images=0,processed_lidars=0;
+        for(const auto& item:images) {
+            if(publish&&!ros::ok())break;
+            auto image=item.instantiate<sensor_msgs::Image>();
+            if(!image)continue;
+            if(image->encoding!=sensor_msgs::image_encodings::MONO8 ||
+               image->step<image->width || image->data.size()<size_t(image->step)*image->height)
+                throw std::runtime_error("Expected valid MONO8 SLAM image");
+            const double time=image->header.stamp.toSec();
+            if(time<=last_read_image)throw std::runtime_error("Non-increasing image sensor timestamps");
+            last_read_image=time;
+            if(output_ros) {
+                output_ros->clock(image->header.stamp);
+                output_ros->publishImage(image);
+                while(right_view&&right_it!=right_view->end()) {
+                    if(!next_right)next_right=right_it->instantiate<sensor_msgs::Image>();
+                    if(!next_right){++right_it;continue;}
+                    if(next_right->header.stamp>image->header.stamp)break;
+                    output_ros->publishImage(next_right,true);
+                    next_right.reset();++right_it;
+                }
+            }
+            if(time<=imu.front().t||time>=imu.back().t)continue;
+            if(!last_image){last_image=time;continue;}
+            int si=-1,ei=-1,sl=-1,el=-1;
+            if(!searchImu(imu,last_image,time,si,ei))
+                throw std::runtime_error("Missing image IMU coverage");
+            if(!lidar_started&&vo.stage()==vilo::FrameHandlerBase::STAGE_DEFAULT_FRAME) {
+                lidar_started=true;last_lidar=last_image;
+                std::cout<<"Visual bootstrap complete; enabling LiDAR\n";
+            }
+            while(have_scan&&pending.t<=last_lidar)have_scan=next_scan();
+            bool use_lidar=lidar_started&&have_scan&&pending.t<=time;
+            pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>);
+            std::vector<double> point_times;
+            double scan_time=last_lidar;
+            if(use_lidar) {
+                const double target=vo.is_lio_initialized_?time:pending.t;
+                const double first=vo.is_lio_initialized_?
+                    std::min(last_lidar,pending.start+pending.point_times.front()):last_lidar;
+                if(!searchImu(imu,first,target,sl,el))
+                    throw std::runtime_error("Missing full-scan LiDAR IMU coverage");
+                cloud=pending.cloud;point_times=pending.point_times;scan_time=pending.t;
+                if(vo.is_lio_initialized_)
+                    for(auto& t:point_times)t+=pending.start-last_lidar;
+            }
+            cv::Mat input(image->height,image->width,CV_8UC1,
+                          const_cast<uint8_t*>(image->data.data()),image->step);
+            vo.addLidarImageImu(cloud,input,imu,point_times,scan_time,time,
+                                si,ei,sl,el,use_lidar?1:0,true);
+            vo.depthFilter()->waitUntilIdle();
+            // Consumers of m_last_frame need the immediate predecessor only.
+            // Keep that predecessor, but stop retaining its entire ancestor chain.
+            if(vo.lastFrame()&&vo.lastFrame()->m_last_frame)
+                vo.lastFrame()->m_last_frame->m_last_frame.reset();
+            last_image=time;++processed_images;
+            if(use_lidar) {
+                ++processed_lidars;
+                last_lidar=vo.lastLidar()->getTimeStamp();
+                archive.append(vo.lastLidar());
+                archive.refresh();
+                if(output_ros)output_ros->publish(archive.states,processed_lidars%5==1);
+                have_scan=next_scan();
+            }
+            if(processed_images%30==0)
+                std::cout<<"PROGRESS images="<<processed_images<<" lidars="<<processed_lidars
+                    <<" initialized[vio="<<vo.is_vio_initialized_<<" lio="<<vo.is_lio_initialized_
+                    <<" fused="<<vo.is_livo_initialized_<<"] live_lidars="<<archive.liveStates()
+                    <<" peak_rss_mb="<<peakMemoryMB()<<std::endl;
+        }
+        vo.depthFilter()->waitUntilIdle();
+        archive.refresh();
+        trajectory_file<<std::fixed<<std::setprecision(9);
+        for(const auto& state:archive.states) {
+            const auto q=state.Twb.unit_quaternion();
+            trajectory_file<<state.time<<" "<<state.Twb.translation().transpose()<<" "
+                <<q.x()<<" "<<q.y()<<" "<<q.z()<<" "<<q.w()<<'\n';
+        }
+        trajectory_file.close();
+        if(output_ros)output_ros->publish(archive.states,true,true);
+        std::cout<<"RESULT images="<<processed_images<<" lidars="<<processed_lidars
+            <<" trajectory="<<archive.states.size()<<" initialized[vio="<<vo.is_vio_initialized_
+            <<" lio="<<vo.is_lio_initialized_<<" fused="<<vo.is_livo_initialized_
+            <<"] map_points="<<(output_ros?output_ros->mapPoints():0)
+            <<" map_input_points="<<(output_ros?output_ros->mapInputPoints():0)
+            <<" peak_rss_mb="<<peakMemoryMB()<<" output="<<output_path<<std::endl;
         bag.close();
-    }
-    catch (const std::exception& e)
-    {
-        std::cerr << "Bag read failed: " << e.what() << '\n';
+        const bool empty=archive.states.empty();
+        if(empty)std::cerr<<"No initialized SLAM trajectory in this window; extend duration to include motion.\n";
+        if(output_ros&&keep_alive)output_ros->keepAlive();
+        return empty?7:0;
+    } catch(const std::exception& error) {
+        std::cerr<<"Bag processing failed: "<<error.what()<<std::endl;
         return 2;
     }
-
-    auto by_time = [](const auto& a, const auto& b)
-    {
-        return a.t < b.t;
-    };
-
-    std::sort(images.begin(), images.end(), by_time);
-    std::sort(lidars.begin(), lidars.end(), by_time);
-    std::sort(imus.begin(), imus.end(), by_time);
-
-    std::cout << "Images: " << images.size() << '\n';
-    std::cout << "Lidars: " << lidars.size() << '\n';
-    std::cout << "IMUs:   " << imus.size() << '\n';
-
-    if (images.size() < 10 || lidars.size() < 2 ||
-        imus.size() < 10)
-    {
-        std::cerr << "Not enough synchronized sensor messages.\n";
-        return 3;
-    }
-
-    vilo::FrameHandlerMono vo(calib, false);
-    vo.start();
-    std::unique_ptr<RosBagOutput> ros_output;
-    if (publish_ros)
-        ros_output.reset(new RosBagOutput(world_frame,body_frame,vo.T_b_c_,vo.T_b_l_,
-                                         image_topic,right_image_topic,
-                                         map_voxel_size,map_publish_period));
-
-    // Stream the display-only right camera rather than retaining another full
-    // image sequence in memory. It does not enter the monocular SLAM frontend.
-    rosbag::Bag right_bag;
-    std::unique_ptr<rosbag::View> right_view;
-    rosbag::View::iterator right_it;
-    sensor_msgs::ImageConstPtr next_right;
-    if (ros_output && !right_image_topic.empty()) {
-        try {
-            right_bag.open(bag_path, rosbag::bagmode::Read);
-            right_view.reset(new rosbag::View(right_bag,
-                rosbag::TopicQuery(std::vector<std::string>{right_image_topic}),begin,end));
-            right_it = right_view->begin();
-            if (right_it == right_view->end())
-                ROS_WARN_STREAM("No right camera images in selected bag window: " << right_image_topic);
-        } catch (const std::exception& e) {
-            ROS_ERROR_STREAM("Cannot open right image stream: " << e.what());
-            return 2;
-        }
-    }
-
-    std::vector<vilo::IMUPoint> imu_vec;
-    for (const auto& m : imus)
-        imu_vec.emplace_back(Eigen::Vector3d(m.ax,m.ay,m.az),
-                             Eigen::Vector3d(m.gx,m.gy,m.gz),m.t);
-    std::ofstream output(output_path);
-    if (!output.is_open())
-    {
-        std::cerr << "Cannot create " << output_path << '\n';
-        return 4;
-    }
-    output << std::fixed << std::setprecision(9);
-    double last_image_ts = 0.0;
-    double last_lidar_ts = 0.0;
-    size_t lidar_id = 0, processed_images = 0, processed_lidars = 0;
-    bool lidar_started = false;
-    std::vector<vilo::LidarPtr> trajectory;
-    for (auto& image : images) {
-        if (publish_ros && !ros::ok()) break;
-        const double image_ts = image.t;
-        if (ros_output) {
-            ros_output->clock(image.message->header.stamp);
-            // Publish even while stationary/before initialization, with no
-            // future images relative to the estimator's simulated clock.
-            ros_output->publishImage(image.message);
-            while (right_view && right_it != right_view->end()) {
-                if (!next_right) next_right = right_it->instantiate<sensor_msgs::Image>();
-                if (!next_right) { ++right_it; continue; }
-                if (next_right->header.stamp > image.message->header.stamp) break;
-                ros_output->publishImage(next_right,true);
-                next_right.reset();
-                ++right_it;
-            }
-        }
-        if (image_ts <= imus.front().t || image_ts >= imus.back().t) continue;
-        if (!last_image_ts) { last_image_ts = image_ts; continue; }
-        int si=-1,ei=-1,sl=-1,el=-1;
-        if (!searchImu(imu_vec,last_image_ts,image_ts,si,ei)) continue;
-        if (!lidar_started && vo.stage() == vilo::FrameHandlerBase::STAGE_DEFAULT_FRAME) {
-            lidar_started = true;
-            last_lidar_ts = last_image_ts;
-            std::cout << "Visual bootstrap complete; enabling LiDAR\n";
-        }
-        while (lidar_id < lidars.size() && lidars[lidar_id].t <= last_lidar_ts)
-            ++lidar_id;
-        const bool use_lidar = lidar_started && lidar_id < lidars.size() &&
-                              lidars[lidar_id].t <= image_ts;
-        pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>);
-        std::vector<double> point_times;
-        double lidar_ts = last_lidar_ts;
-        if (use_lidar) {
-            auto& scan = lidars[lidar_id];
-            const double state_time = vo.is_lio_initialized_ ? image_ts : scan.t;
-            if (!searchImu(imu_vec,last_lidar_ts,state_time,sl,el)) {
-                std::cerr << "Missing bracketed LiDAR IMU interval\n";
-                return 5;
-            }
-            cloud = scan.cloud;
-            point_times = scan.point_times;
-            if (vo.is_lio_initialized_)
-                for (auto& t : point_times) t += scan.start - last_lidar_ts;
-            lidar_ts = scan.t;
-        }
-        const auto& message = image.message;
-        cv::Mat input_image(message->height,message->width,CV_8UC1,
-                            const_cast<uint8_t*>(message->data.data()),message->step);
-        vo.addLidarImageImu(cloud,input_image,imu_vec,point_times,
-                            lidar_ts,image_ts,si,ei,sl,el,use_lidar?1:0);
-        vo.depthFilter()->waitUntilIdle();
-        last_image_ts = image_ts;
-        ++processed_images;
-        if (use_lidar) {
-            ++processed_lidars;
-            ++lidar_id;
-            if (vo.lastLidar()) {
-                last_lidar_ts = vo.lastLidar()->getTimeStamp();
-                trajectory.push_back(vo.lastLidar());
-                if (ros_output) ros_output->publish(trajectory,processed_lidars%5 == 1);
-            }
-        }
-        if (processed_images % 30 == 0)
-            std::cout << "PROGRESS images=" << processed_images << " lidars=" << processed_lidars
-                      << " initialized[vio=" << vo.is_vio_initialized_ << " lio="
-                      << vo.is_lio_initialized_ << " fused=" << vo.is_livo_initialized_ << "]\n";
-    }
-    vo.depthFilter()->waitUntilIdle();
-    for (const auto& lidar : trajectory) {
-        const auto pose = lidar->getImuPose();
-        if (!pose.matrix().allFinite()) { std::cerr << "Non-finite trajectory pose\n"; return 6; }
-        const auto q=pose.unit_quaternion();
-        output << lidar->getTimeStamp() << " " << pose.translation().transpose() << " "
-               << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << '\n';
-    }
-    output.close();
-    if (ros_output) ros_output->publish(trajectory,true,true);
-    std::cout << "RESULT images=" << processed_images << " lidars=" << processed_lidars
-              << " trajectory=" << trajectory.size() << " initialized[vio="
-              << vo.is_vio_initialized_ << " lio=" << vo.is_lio_initialized_
-              << " fused=" << vo.is_livo_initialized_ << "] map_points="
-              << (ros_output ? ros_output->mapPoints() : 0)
-              << " map_input_points=" << (ros_output ? ros_output->mapInputPoints() : 0)
-              << " output=" << output_path << std::endl;
-    if (trajectory.empty())
-        std::cerr << "No initialized SLAM trajectory in this window; extend duration to include motion.\n";
-    if (ros_output && keep_alive) ros_output->keepAlive();
-    return trajectory.empty() ? 7 : 0;
 }

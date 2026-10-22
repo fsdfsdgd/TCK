@@ -2,6 +2,11 @@
 
 ## ROS Noetic v1.0.0
 
+The `fix/long-sequence-map` development branch contains additional streaming,
+memory-lifetime, deskew/ring and map/optimization consistency fixes. The fixed
+`v1.0.0` tag remains the original baseline. Current measurements and commands:
+[long-sequence work](docs/LONG_SEQUENCE_FIX.md).
+
 This repository preserves the original `test_vilo` and adds synchronized offline
 ROS bag input, SLAM pose/path/TF output, voxel-fused keyframe feature-map output,
 and left/right infrared image displays in RViz. The right image is display-only;

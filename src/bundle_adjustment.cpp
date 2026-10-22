@@ -44,6 +44,7 @@
 #include "vilo/map.h"
 #include "vilo/matcher.h"
 #include "vilo/lidar.h"
+#include "vilo/sensor_reliability.h"
 
 #include <stdlib.h>
 #include <time.h>
@@ -3473,10 +3474,7 @@ void lidarImuLocalBundleAdjustment(Map* map,
         Sophus::SE3 Twb = lidar->getImuPose();
         VertexPose * VP = new VertexPose(Twb);
         VP->setId(lidar->id_);
-        // if(0==i)
-        //     VP->setFixed(true);
-        // else
-            VP->setFixed(false);
+        VP->setFixed(false);
         optimizer.addVertex(VP);
 
         if(lidar->imu_from_last_keylidar_)
@@ -3484,10 +3482,7 @@ void lidarImuLocalBundleAdjustment(Map* map,
             Eigen::Vector3d vel = lidar->getVelocity();
             VertexVelocity* VV = new VertexVelocity(vel);
             VV->setId( max_id + 3*lidar->id_ + 1 );
-            // if(0==i)
-            //     VV->setFixed(true);
-            // else
-                VV->setFixed(false);
+            VV->setFixed(false);
             optimizer.addVertex(VV);
 
             if(is_opt_each_bias)
@@ -3495,19 +3490,13 @@ void lidarImuLocalBundleAdjustment(Map* map,
                 Eigen::Vector3d bg = lidar->getImuGyroBias();
                 VertexGyroBias* VG = new VertexGyroBias(bg);
                 VG->setId(max_id + 3*lidar->id_ + 2);
-                // if(0==i)
-                //     VG->setFixed(true);
-                // else
-                    VG->setFixed(false);
+                VG->setFixed(false);
                 optimizer.addVertex(VG);
 
                 Eigen::Vector3d ba = lidar->getImuAccBias();
                 VertexAccBias* VA = new VertexAccBias(ba);
                 VA->setId(max_id + 3*lidar->id_ + 3);
-                // if(0==i)
-                //     VA->setFixed(true);
-                // else
-                    VA->setFixed(false);
+                VA->setFixed(false);
                 optimizer.addVertex(VA);
             }
 
@@ -3678,8 +3667,8 @@ void lidarImuLocalBundleAdjustment(Map* map,
     
     for(int i=0; i<N; i++)
     {
-        if(0==i)
-            continue;
+        // Commit the oldest state too: it was a free optimizer vertex. Active
+        // submaps and the output cache replace geometry at its updated pose.
 
         LidarPtr lidar = key_lidars_vec[i];
         VertexPose* VP = static_cast<VertexPose*>(optimizer.vertex( lidar->id_ ) );
@@ -4423,8 +4412,8 @@ void lidarVisualImuLocalBundleAdjustment(
 
     for(int i=0; i<N_lidar; i++)
     {
-        if(0==i)
-            continue;
+        // Commit the oldest state too: it was a free optimizer vertex. Active
+        // submaps and the output cache replace geometry at its updated pose.
 
         LidarPtr lidar = key_lidars_vec[i];
 
@@ -4665,33 +4654,11 @@ void lidarVisualImuLocalBundleAdjustment(
         }
 
     }
-    avr_err_lr = avr_err_lr / l_err_num;
-
-    int old_l_err_num=0, old_v_err_num=0;
-    double old_l_err=0, old_v_err=0;
-    for(auto qit=map->avr_err_lr_deque_.begin();qit<map->avr_err_lr_deque_.end();++qit)
-        old_l_err += *qit;
-
-    for(auto qit=map->avr_err_pt_deque_.begin();qit<map->avr_err_pt_deque_.end();++qit)
-        old_v_err += *qit;
-
-    for(auto qit=map->l_err_num_deque_.begin();qit<map->l_err_num_deque_.end();++qit)
-        old_l_err_num += *qit;
-    
-    for(auto qit=map->v_err_num_deque_.begin();qit<map->v_err_num_deque_.end();++qit)
-        old_v_err_num += *qit; 
-    
-    old_l_err = 1.0 * old_l_err / map->avr_err_lr_deque_.size();
-    old_v_err = 1.0 * old_v_err / map->avr_err_pt_deque_.size();
-    old_l_err_num = 1.0 * old_l_err_num / map->l_err_num_deque_.size();
-    old_v_err_num = 1.0 * old_v_err_num / map->v_err_num_deque_.size();
-
-    double reliability_v1 = (1.0 * v_err_num /  old_v_err_num) * (old_v_err / avr_err_pt);
-    double reliability_l1 = (1.0 * l_err_num /  old_l_err_num) * (old_l_err / avr_err_lr);
-    // double l_weight1 = (4.0 / PI) * (l_err_num/v_err_num) * atan(sqrt(reliability_l1));
-    // double v_weight1 = (4.0 / PI) * atan( sqrt(reliability_v1) );
-    double l_weight1 = (l_err_num/v_err_num) * atan(sqrt(reliability_l1));
-    double v_weight1 = atan(sqrt(reliability_v1) );
+    avr_err_lr = l_err_num>0 ? avr_err_lr/l_err_num : 0;
+    const double reliability_v1=relativeSensorReliability(v_err_num,avr_err_pt,
+        map->v_err_num_deque_,map->avr_err_pt_deque_);
+    const double reliability_l1=relativeSensorReliability(l_err_num,avr_err_lr,
+        map->l_err_num_deque_,map->avr_err_lr_deque_);
 
     while(map->avr_err_pt_deque_.size()>=10)
         map->avr_err_pt_deque_.pop_front();
@@ -4716,12 +4683,6 @@ void lidarVisualImuLocalBundleAdjustment(
     int scan_id = 0;
     bool is_li_good = true;
 
-    double l_weight = l_weight1;
-    double v_weight = v_weight1;
-
-    if(std::isnan(v_weight))
-        v_weight = 1.0;
-
     if(v_err_num <= 2000)
     {
         map->is_camera_very_bad_ = true;
@@ -4734,11 +4695,9 @@ void lidarVisualImuLocalBundleAdjustment(
             map->is_camera_very_bad_ = false;
     }
 
-    if(map->is_camera_very_bad_)
-    {
-        v_weight = 1.;
-        l_weight = 10.;
-    }
+    const auto weights=fusedSensorWeights(l_err_num,v_err_num,reliability_l1,
+                                          reliability_v1,map->is_camera_very_bad_);
+    const double l_weight=weights.first,v_weight=weights.second;
 
     for(int i=0; i<N_lidar; i++)
     {
@@ -5206,8 +5165,8 @@ void lidarVisualImuLocalBundleAdjustment(
     boost::unique_lock<boost::mutex> lock(map->map_mutex_);
     for(int i=0; i<N_lidar; i++)
     {
-        if(0==i)
-            continue;
+        // Commit the oldest state too: it was a free optimizer vertex. Active
+        // submaps and the output cache replace geometry at its updated pose.
 
         LidarPtr lidar = key_lidars_vec[i];
 
@@ -5444,12 +5403,8 @@ void computeVisualAvrError(set<Point*>& mps, int& err_num, float& avr_err_pt, fl
         }
     }
     err_num = n_pt + n_ls;
-    avr_err_pt = sum_err_pt / n_pt;
-    avr_err_ld = sum_err_ls / n_ls;
-    if(0==n_pt)
-        avr_err_pt = 0;
-    if(0==n_ls)
-        avr_err_ld = 0;
+    avr_err_pt = n_pt>0 ? sum_err_pt/n_pt : 0;
+    avr_err_ld = n_ls>0 ? sum_err_ls/n_ls : 0;
 }
 
 void computeLidarAvrError(std::vector <std::vector<Eigen::Vector3d>>& pts_vec_vec,

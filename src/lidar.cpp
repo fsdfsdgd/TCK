@@ -1,3 +1,4 @@
+#include "vilo/imu_timeline.h"
 // This file is part of TCK-VILO:A Tightly-Coupled and Keyframe-Based Visual-Inertial-Lidar Odometry System for Mobile Robots With Adaptive Sensor Reliability Evaluation
 //
 // Copyright(c) 2024, Jun Yin
@@ -60,9 +61,10 @@ Lidar::Lidar(vilo::AbstractCamera* cam, int w, int h, pcl::PointCloud<pcl::Point
     setLidarParams();
 }
 
-Lidar::Lidar(pcl::PointCloud<pcl::PointXYZI>::Ptr p_cloud ):
+Lidar::Lidar(pcl::PointCloud<pcl::PointXYZI>::Ptr p_cloud, bool input_ring_time):
                        id_(frame_counter_++)
 {
+    input_ring_time_ = input_ring_time;
     N_ = 0;
     pcloud_ = std::move(p_cloud);
 
@@ -112,6 +114,7 @@ Lidar::Lidar(pcl::PointCloud<pcl::PointXYZI>::Ptr p_cloud ):
 
 Lidar::~Lidar()
 {
+    delete imu_from_last_lidar_;
     project_img_.release();
     id_img_.release();
     oringin_lidar_img_map_.release();
@@ -174,7 +177,10 @@ void Lidar::registerPoints()
         float v_angle = atan2(ptz, d) * 180 / M_PI;
 
         //ouster 64
-        int n_row = round(N_SCAN_ - 1 - (v_angle - Vertical_Bottom_) / ang_res_y_);
+        // Deskew rotates a ray into the reference scan. Its elevation there is
+        // NOT its firing channel: keep the sensor's original hardware ring.
+        int n_row = input_ring_time_?int(pcloud_->points[i].intensity):
+                    int(std::round(N_SCAN_ - 1 - (v_angle - Vertical_Bottom_) / ang_res_y_));
         int n_col = round(0.5 * Horizon_SCAN_ - atan2(pty, ptx)/ ang_res_x_* 180 / M_PI);
 
         // velodyne 64
@@ -227,7 +233,8 @@ void Lidar::registerPoints()
         point.x = ptx;
         point.y = pty;
         point.z = ptz;
-        point.intensity = n_row + Scan_Period_*relTime;
+        point.intensity = input_ring_time_?pcloud_->points[i].intensity:
+                          n_row + Scan_Period_*relTime;
         pcs_ring_vec[n_row].push_back(point); 
     }
     project_img_ = project_img;
@@ -246,99 +253,24 @@ void Lidar::registerPoints()
         throw std::runtime_error("Too few valid LiDAR points for feature extraction");
 }
 
-void Lidar::undistPoints(Sophus::SE3& dT, std::vector<double>& pts_ts_vec)
+void Lidar::undistPoints(const std::vector<IMUPoint>& imu,
+                         const std::vector<double>& pts_ts_vec)
 {
-    if(!previous_lidar_)
-        return;
-    
-    Sophus::SE3 Tlw = previous_lidar_->getLidarPose();
-
-    Eigen::Matrix3d q1 = previous_lidar_->getImuRotation();
-    Eigen::Vector3d p1 = previous_lidar_->getImuPosition();
-    Eigen::Vector3d v1 = previous_lidar_->getVelocity();
-
-    std::vector<double> dt_vec = imu_from_last_lidar_->dt_vec_;
-    std::vector<Eigen::Vector3d> dp_vec = imu_from_last_lidar_->dp_vec_;
-    std::vector<Eigen::Vector3d> dv_vec = imu_from_last_lidar_->dv_vec_;
-    std::vector<Eigen::Matrix3d> dq_vec = imu_from_last_lidar_->dq_vec_;
-
-    Eigen::Vector3d G; G << 0,0,-vilo::GRAVITY_VALUE;
-
-    double dt = 0;
-    std::vector<Eigen::Matrix3d> Rlc_vec;
-    std::vector<Eigen::Vector3d> tlc_vec;
-    
-    for(size_t i=0,iend=dt_vec.size(); i<iend; i++)
-    {
-        dt += dt_vec[i];
-        Eigen::Matrix3d dq = dq_vec[i];
-        Eigen::Vector3d dp = dp_vec[i];
-        Eigen::Vector3d dv = dv_vec[i];
-
-        Eigen::Matrix3d q2 = vilo::normalizeRotation(q1*dq);
-        Eigen::Vector3d v2 = v1 + G*dt + q1*dv;
-        Eigen::Vector3d p2 = p1 + v1*dt + 0.5*dt*dt*G + q1 * dp;
-
-        Sophus::SE3 Twb2 = Sophus::SE3(q2, p2);
-        Sophus::SE3 Twc2 = Twb2 * T_b_l_;
-        Sophus::SE3 Tlc = Tlw * Twc2;
-
-        Eigen::Matrix3d Rlc = Tlc.rotation_matrix();
-        Eigen::Vector3d tlc = Tlc.translation();
-        
-        Rlc_vec.push_back(Rlc);
-        tlc_vec.push_back(tlc);
-        dt_vec[i] = dt;
-    }
-
-    Sophus::SE3 Tlc_final(Rlc_vec.back(), tlc_vec.back());
-    Sophus::SE3 Tcl_final = Tlc_final.inverse();
-
-    int cursor = 0;
-    int n_dt = dt_vec.size();
-    double min_t = pts_ts_vec[0];
-    for(size_t i=0,iend=pcloud_->points.size(); i<iend; i++)
-    {
-        double ptx = pcloud_->points[i].x;
-        double pty = pcloud_->points[i].y;
-        double ptz = pcloud_->points[i].z;
-        
-        if(0==ptx && 0==pty && 0==ptz)
-            continue; 
-            
-        double t_pt = pts_ts_vec[i];
-        for(int j=cursor;j<n_dt-1;j++)
-        {
-            if(t_pt >= dt_vec[j] && t_pt < dt_vec[j+1])
-            {
-                cursor = j+1;
-                break;
-            }
-        }
-
-        double t_c = dt_vec[cursor];
-        Eigen::Quaterniond qlc(Rlc_vec[cursor]);
-        Eigen::Vector3d tlc = tlc_vec[cursor];
-
-        double s;
-        if (is_undist_pts_)
-            s = (t_pt - min_t) / t_c;
-        else
-            s = 1.0;
-
-        s = s>1 ? 1:s;
-
-        Eigen::Quaterniond q_lt = Eigen::Quaterniond::Identity().slerp(s, qlc); 
-        Eigen::Vector3d t_lt = s * tlc;
-        Eigen::Vector3d point(ptx, pty, ptz);
-
-        Eigen::Vector3d un_point_last = q_lt * point + t_lt; 
-        Eigen::Vector3d un_point_cur = Tcl_final * un_point_last;
-
-        pcloud_->points[i].x = un_point_cur[0];
-        pcloud_->points[i].y = un_point_cur[1];
-        pcloud_->points[i].z = un_point_cur[2];
-
+    if(!previous_lidar_ || !is_undist_pts_)return;
+    if(pts_ts_vec.size()!=pcloud_->size() || pts_ts_vec.empty() ||
+       !std::is_sorted(pts_ts_vec.begin(),pts_ts_vec.end()))
+        throw std::runtime_error("LiDAR points and timestamps are inconsistent");
+    const double anchor=previous_lidar_->getTimeStamp();
+    const double first=std::min(anchor,anchor+pts_ts_vec.front());
+    const double last=std::max(getTimeStamp(),anchor+pts_ts_vec.back());
+    ImuTimeline timeline(imu,anchor,first,last,previous_lidar_->getImuPose(),
+                         previous_lidar_->getVelocity(),previous_lidar_->ba_,previous_lidar_->bg_);
+    const Sophus::SE3 Tlw=(timeline.at(getTimeStamp())*T_b_l_).inverse();
+    for(size_t i=0;i<pcloud_->size();++i) {
+        auto& point=pcloud_->points[i];
+        const Eigen::Vector3d original(point.x,point.y,point.z);
+        const Eigen::Vector3d corrected=Tlw*(timeline.at(anchor+pts_ts_vec[i])*T_b_l_*original);
+        point.x=corrected.x();point.y=corrected.y();point.z=corrected.z();
     }
 }
 

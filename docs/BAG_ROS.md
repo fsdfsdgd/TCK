@@ -16,7 +16,7 @@ Incremental build after editing project sources:
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
-cmake --build build -j2
+cmake --build build -j1
 ```
 
 The executable is available both through `rosrun vilo test_vilo_bag` and
@@ -43,7 +43,9 @@ It publishes `/clock`; the launch sets `/use_sim_time=true`.
 The official bag starts almost stationary: the first 8 seconds did not provide
 enough parallax for the original monocular initializer. The first successful
 visual initialization in the tested prefix occurred around 19 seconds.
-No initialization thresholds or calibration parameters were lowered/changed.
+Initialization thresholds and camera intrinsics/distortion were not changed.
+The LiDAR/IMU Z lever arm was corrected against the bag's recorded static TF;
+see `LONG_SEQUENCE_FIX.md` for the derivation and current test results.
 
 An 8-second window containing actual motion:
 
@@ -55,7 +57,7 @@ Optional arguments: `rviz:=false`, `keep_alive:=false`,
 `output:=/absolute/path/trajectory.tum`, `image_topic:=...`, `right_image_topic:=...`, `lidar_topic:=...`,
 `imu_topic:=...`, `world_frame:=...`, `body_frame:=...`.
 `map_voxel_size:=0.2` controls the displayed global map resolution in meters;
-`map_publish_period:=1.0` limits map rebuilding/publication in wall-clock seconds.
+`map_publish_period:=1.0` limits map cache updates/publication in wall-clock seconds.
 Pose/TF updates are not throttled. The final map is always published.
 Default output is `$HOME/.ros/tck_vilo_trajectory.tum`.
 Do not run two copies simultaneously on the same ROS master.
@@ -111,9 +113,13 @@ correctly aligned observations from adding duplicate displayed points in that
 voxel. `RESULT map_input_points` reports features before global fusion and
 `map_points` reports the published result. This reduces output duplication, not
 pose drift: separated wall layers may occupy different voxels and remain visible.
-Map rebuilding still traverses retained keyframes; long-run incremental submap
-management and geometric accuracy require separate validation and fixes.
-The path is rebuilt from retained estimated states so initialization/optimization
+The current development branch uses an incremental cache: a changed keyframe's
+old voxel contribution is subtracted before its new contribution is added.
+The historical archive owns lightweight poses and keyframe features, not entire
+LiDAR objects. Images and clouds are streamed from the bag. The estimator's
+active local submaps stay in keyframe coordinates until their anchors leave the
+optimization window; only then are they frozen into the rolling world grid.
+The path is rebuilt from archived estimated states so initialization/optimization
 corrections are reflected. No map is published before any SLAM scan is processed.
 
 This is the original monocular visual frontend: it consumes the left infrared
@@ -122,6 +128,29 @@ algorithm. IMU input is Ouster `/os1_cloud_node/imu` (not RealSense IMU).
 Ouster fields are float32 x/y/z, uint32 `t` in nanoseconds and uint8 `ring`.
 The scan's end time is header time plus the maximum actual point offset.
 There is no clock-domain rewrite or callback-arrival-time correction.
+Hardware `ring` and point time are kept through deskew: the rotated ray elevation
+must not be used to assign a new firing channel. The original folder-based
+`test_vilo` retains its legacy input convention through default arguments.
+
+## Long-sequence regression
+
+The current changes are on `fix/long-sequence-map`; the published `v1.0.0` tag
+has not moved. See [long-sequence changes and measured results](LONG_SEQUENCE_FIX.md).
+
+```bash
+source /opt/ros/noetic/setup.bash
+cmake -S . -B build
+cmake --build build --target test_vilo_bag map_consistency_test test_vilo -j1
+(cd build && ctest --output-on-failure)
+source build/devel/setup.bash
+roslaunch vilo test_vilo_bag.launch duration:=100
+```
+
+Memory must be checked on the SLAM process, not inferred from the number of
+displayed points. A map still grows when newly observed space is added; a
+longer bag should not force retention of every input image/raw scan. The RViz
+configuration already uses cloud queue 1/decay 0 and path buffer 1, so it displays
+the latest assembled map rather than accumulating old map messages.
 
 ## Verify
 

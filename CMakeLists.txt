@@ -167,6 +167,9 @@ target_link_libraries(
 )
 
 enable_testing()
+add_executable(map_consistency_test tests/map_consistency_test.cpp)
+target_link_libraries(map_consistency_test vilo ${catkin_LIBRARIES})
+add_test(NAME map_consistency COMMAND map_consistency_test)
 add_executable(lidar_memory_test tests/lidar_memory_test.cpp)
 target_link_libraries(lidar_memory_test vilo ${catkin_LIBRARIES})
 # Keep the original standalone bin/ commands and catkin's lib/vilo commands in
